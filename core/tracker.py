@@ -1,0 +1,88 @@
+import cv2
+import math
+import urllib.request
+import os
+import logging
+import numpy as np
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("PoseTracker")
+
+MODEL_PATH = "pose_landmarker.task"
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
+
+class PoseTracker:
+    def __init__(self):
+        # Auto-download model file if not present locally
+        if not os.path.exists(MODEL_PATH):
+            logger.info("Downloading MediaPipe Pose Model (One-time download)...")
+            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+            logger.info("Model downloaded successfully.")
+
+        base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
+        options = vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            num_poses=1,
+            min_pose_detection_confidence=0.5,
+            min_pose_presence_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        self.detector = vision.PoseLandmarker.create_from_options(options)
+        logger.info("MediaPipe 3.13 Tasks Engine Initialized successfully.")
+
+    def process_frame(self, frame_bgr):
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        detection_result = self.detector.detect(mp_image)
+        return detection_result
+
+    def get_body_measurements(self, detection_result, img_width, img_height):
+        if not detection_result or not detection_result.pose_landmarks:
+            return None
+
+        landmarks = detection_result.pose_landmarks[0]
+
+        # Landmark Index 11 = Left Shoulder, 12 = Right Shoulder
+        left_shoulder_lm = landmarks[11]
+        right_shoulder_lm = landmarks[12]
+
+        left_shoulder = (int(left_shoulder_lm.x * img_width), int(left_shoulder_lm.y * img_height))
+        right_shoulder = (int(right_shoulder_lm.x * img_width), int(right_shoulder_lm.y * img_height))
+
+        shoulder_width = math.hypot(
+            right_shoulder[0] - left_shoulder[0], 
+            right_shoulder[1] - left_shoulder[1]
+        )
+
+        center_x = int((left_shoulder[0] + right_shoulder[0]) / 2)
+        center_y = int((left_shoulder[1] + right_shoulder[1]) / 2)
+
+        angle_rad = math.atan2(
+            right_shoulder[1] - left_shoulder[1], 
+            right_shoulder[0] - left_shoulder[0]
+        )
+
+        return {
+            "left_shoulder": left_shoulder,
+            "right_shoulder": right_shoulder,
+            "shoulder_width": shoulder_width,
+            "chest_center": (center_x, center_y),
+            "angle_deg": math.degrees(angle_rad)
+        }
+
+    def draw_landmarks(self, frame_bgr, detection_result):
+        if detection_result and detection_result.pose_landmarks:
+            landmarks = detection_result.pose_landmarks[0]
+            for lm in landmarks:
+                cx, cy = int(lm.x * frame_bgr.shape[1]), int(lm.y * frame_bgr.shape[0])
+                cv2.circle(frame_bgr, (cx, cy), 3, (0, 255, 0), -1)
+        return frame_bgr
+
+    def close(self):
+        if hasattr(self, 'detector'):
+            self.detector.close()
+        logger.info("Pose Engine Closed.")
