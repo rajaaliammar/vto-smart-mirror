@@ -1,72 +1,69 @@
 import cv2
-import os
-import sys
-from config.settings import camera_settings
 from core.camera import CameraStream
+from core.garment_manager import GarmentManager
 from core.overlay import GarmentOverlay
 from core.tracker import PoseTracker
-from utils.visualization import FPSCounter, draw_hud
+from core.visualization import UIOverlay
 
 
 def main():
-    print("==================================================")
-    print("      VTO SMART MIRROR - PHASE 2 (OVERLAY)        ")
-    print("==================================================")
+    print("==========================================")
+    print(" VTO SMART MIRROR - PHASE 3 (GARMENT SELECTOR)")
+    print("==========================================")
+    print(" Controls:")
+    print("  'N' -> Next Garment")
+    print("  'P' -> Previous Garment")
+    print("  'Q' -> Exit Application")
+    print("==========================================")
 
-    garment_path = os.path.join(
-        "assets", "sample_clothes", "tshirts", "tshirt.png"
-    )
-    if not os.path.exists(garment_path):
-        print(
-            f"[ERROR] Please place a PNG image at '{garment_path}' before running."
-        )
-        sys.exit(1)
-
-    try:
-        camera = CameraStream(
-            device_index=camera_settings.DEVICE_INDEX,
-            width=camera_settings.WIDTH,
-            height=camera_settings.HEIGHT,
-        )
-    except Exception as e:
-        print(f"[ERROR] Could not start camera stream: {e}")
-        sys.exit(1)
-
+    # Initialize Modules
+    cam = CameraStream(device_index=0, width=1280, height=720)
     tracker = PoseTracker()
-    overlay = GarmentOverlay(garment_path)
-    fps_counter = FPSCounter()
+    ui = UIOverlay()
+    garment_mgr = GarmentManager()
 
-    print("[INFO] Press 'q' key on screen window to Exit Application.")
+    # Load initial garment
+    overlay = GarmentOverlay()
+    current_path = garment_mgr.get_current_garment_path()
+    if current_path:
+        overlay.load_garment(current_path)
+        print(f"[INFO] Active garment: {garment_mgr.get_current_name()}")
 
     while True:
-        success, frame = camera.get_frame()
-        if not success:
+        success, frame = cam.get_frame()
+        if not success or frame is None:
             continue
 
-        h, w, _ = frame.shape
-        detection_result = tracker.process_frame(frame)
+        # Detect Pose Landmarks
+        body_data = tracker.process_frame(frame)
 
-        body_data = tracker.get_body_measurements(
-            detection_result, img_width=w, img_height=h
-        )
-        is_tracking = body_data is not None
+        # Apply Garment Overlay (uses the texture last loaded via load_garment)
+        frame = overlay.apply_overlay(frame, body_data)
 
-        # Apply Garment Overlay
-        if body_data:
-            frame = overlay.apply_overlay(frame, body_data)
-
-        fps = fps_counter.update()
-        frame = draw_hud(
-            frame, fps, tracking_active=is_tracking, body_data=body_data
+        # Draw UI Text & Key Info
+        garment_name = garment_mgr.get_current_name()
+        frame = ui.draw_status(
+            frame,
+            body_data,
+            extra_info=f"Garment: {garment_name} (N:Next | P:Prev)",
         )
 
         cv2.imshow("VTO Smart Mirror - Virtual Try-On", frame)
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            print("[INFO] Shutting down application...")
+        # Keyboard Event Handling
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q") or key == ord("Q"):
             break
+        elif key == ord("n") or key == ord("N"):
+            new_path = garment_mgr.next_garment()
+            if overlay.load_garment(new_path):
+                print(f"[INFO] Switched to: {garment_mgr.get_current_name()}")
+        elif key == ord("p") or key == ord("P"):
+            new_path = garment_mgr.prev_garment()
+            if overlay.load_garment(new_path):
+                print(f"[INFO] Switched to: {garment_mgr.get_current_name()}")
 
-    camera.release()
+    cam.release()
     tracker.close()
     cv2.destroyAllWindows()
     print("[INFO] System exited cleanly.")

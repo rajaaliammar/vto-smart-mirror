@@ -35,16 +35,24 @@ class PoseTracker:
         logger.info("MediaPipe 3.13 Tasks Engine Initialized successfully.")
 
     def process_frame(self, frame_bgr):
+        """Detect pose and return a body_data dict, or None if no pose is found."""
+        if frame_bgr is None:
+            return None
+
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         detection_result = self.detector.detect(mp_image)
-        return detection_result
+
+        img_height, img_width = frame_bgr.shape[:2]
+        return self.get_body_measurements(detection_result, img_width, img_height)
 
     def get_body_measurements(self, detection_result, img_width, img_height):
         if not detection_result or not detection_result.pose_landmarks:
             return None
 
         landmarks = detection_result.pose_landmarks[0]
+        if len(landmarks) < 13:
+            return None
 
         # Landmark Index 11 = Left Shoulder, 12 = Right Shoulder
         left_shoulder_lm = landmarks[11]
