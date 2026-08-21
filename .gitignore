@@ -32,3 +32,6 @@ logs/
 
 # Local ML model downloads
 *.task
+
+# Snapshot captures
+captures/
