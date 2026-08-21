@@ -8,6 +8,8 @@ SHOULDER_SCALE = 1.55
 COLLAR_LIFT = 0.08
 # Hard cap so a landmark glitch cannot stretch the shirt across the whole frame.
 MAX_WIDTH_FRAME_FRAC = 0.50
+# Smooth pose jitter (hands entering the frame, brief dropouts).
+EMA_ALPHA = 0.3
 
 
 class GarmentOverlay:
@@ -15,8 +17,18 @@ class GarmentOverlay:
     def __init__(self, garment_path: str = None):
         self.garment = None
         self.garment_path = None
+        self._ema = {}
         if garment_path:
             self.load_garment(garment_path)
+
+    def _smooth(self, key: str, value: float) -> float:
+        prev = self._ema.get(key)
+        if prev is None:
+            self._ema[key] = value
+            return value
+        blended = EMA_ALPHA * value + (1.0 - EMA_ALPHA) * prev
+        self._ema[key] = blended
+        return blended
 
     def load_garment(self, garment_path: str) -> bool:
         if not garment_path:
@@ -240,10 +252,18 @@ class GarmentOverlay:
         if shoulder_pixel_dist <= 1:
             return frame
 
+        lx = self._smooth("lx", lx)
+        ly = self._smooth("ly", ly)
+        rx = self._smooth("rx", rx)
+        ry = self._smooth("ry", ry)
+        shoulder_pixel_dist = abs(rx - lx)
+
         target_width = int(shoulder_pixel_dist * SHOULDER_SCALE)
         target_width = int(np.clip(target_width, 40, int(frame_w * MAX_WIDTH_FRAME_FRAC)))
         aspect_ratio = self.garment.shape[0] / float(self.garment.shape[1])
         target_height = int(target_width * aspect_ratio)
+        target_width = int(self._smooth("width", float(target_width)))
+        target_height = int(self._smooth("height", float(target_height)))
         if target_width <= 0 or target_height <= 0:
             return frame
 
