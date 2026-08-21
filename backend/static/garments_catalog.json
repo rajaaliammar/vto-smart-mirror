@@ -1,0 +1,41 @@
+{
+  "tshirt": {
+    "id": "tshirt",
+    "name": "Tshirt",
+    "category": "tshirt",
+    "filename": "tshirt.png",
+    "available_sizes": [
+      "S",
+      "M",
+      "L",
+      "XL"
+    ],
+    "default_scale": 1.55
+  },
+  "tshirt1": {
+    "id": "tshirt1",
+    "name": "Tshirt1",
+    "category": "tshirt",
+    "filename": "tshirt1.png",
+    "available_sizes": [
+      "S",
+      "M",
+      "L",
+      "XL"
+    ],
+    "default_scale": 1.55
+  },
+  "tshirt2": {
+    "id": "tshirt2",
+    "name": "Tshirt2",
+    "category": "tshirt",
+    "filename": "tshirt2.png",
+    "available_sizes": [
+      "S",
+      "M",
+      "L",
+      "XL"
+    ],
+    "default_scale": 1.55
+  }
+}

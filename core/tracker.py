@@ -58,28 +58,30 @@ class PoseTracker:
         left_shoulder_lm = landmarks[11]
         right_shoulder_lm = landmarks[12]
 
-        left_shoulder = (int(left_shoulder_lm.x * img_width), int(left_shoulder_lm.y * img_height))
-        right_shoulder = (int(right_shoulder_lm.x * img_width), int(right_shoulder_lm.y * img_height))
-
-        shoulder_width = math.hypot(
-            right_shoulder[0] - left_shoulder[0], 
-            right_shoulder[1] - left_shoulder[1]
+        left_shoulder = np.array(
+            [left_shoulder_lm.x * img_width, left_shoulder_lm.y * img_height],
+            dtype=np.float32,
+        )
+        right_shoulder = np.array(
+            [right_shoulder_lm.x * img_width, right_shoulder_lm.y * img_height],
+            dtype=np.float32,
         )
 
-        center_x = int((left_shoulder[0] + right_shoulder[0]) / 2)
-        center_y = int((left_shoulder[1] + right_shoulder[1]) / 2)
+        shoulder_width = float(np.linalg.norm(left_shoulder - right_shoulder))
+        center = (left_shoulder + right_shoulder) * 0.5
 
         angle_rad = math.atan2(
-            right_shoulder[1] - left_shoulder[1], 
-            right_shoulder[0] - left_shoulder[0]
+            right_shoulder[1] - left_shoulder[1],
+            right_shoulder[0] - left_shoulder[0],
         )
 
         return {
-            "left_shoulder": left_shoulder,
-            "right_shoulder": right_shoulder,
+            "left_shoulder": (int(left_shoulder[0]), int(left_shoulder[1])),
+            "right_shoulder": (int(right_shoulder[0]), int(right_shoulder[1])),
             "shoulder_width": shoulder_width,
-            "chest_center": (center_x, center_y),
-            "angle_deg": math.degrees(angle_rad)
+            "chest_center": (int(center[0]), int(center[1])),
+            "shoulder_center": (float(center[0]), float(center[1])),
+            "angle_deg": math.degrees(angle_rad),
         }
 
     def draw_landmarks(self, frame_bgr, detection_result):
