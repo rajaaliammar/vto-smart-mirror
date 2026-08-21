@@ -1,6 +1,6 @@
 import cv2
+from core.api_client import GarmentApiClient
 from core.camera import CameraStream
-from core.garment_manager import GarmentManager
 from core.overlay import GarmentOverlay
 from core.tracker import PoseTracker
 from core.visualization import UIOverlay
@@ -16,32 +16,26 @@ def main():
     print("  'Q' -> Exit Application")
     print("==========================================")
 
-    # Initialize Modules
     cam = CameraStream(device_index=0, width=1280, height=720)
     tracker = PoseTracker()
     ui = UIOverlay()
-    garment_mgr = GarmentManager()
+    catalog = GarmentApiClient()
 
-    # Load initial garment
     overlay = GarmentOverlay()
-    current_path = garment_mgr.get_current_garment_path()
+    current_path = catalog.get_current_image_path()
     if current_path:
         overlay.load_garment(current_path)
-        print(f"[INFO] Active garment: {garment_mgr.get_current_name()}")
+        print(f"[INFO] Active garment: {catalog.get_current_name()}")
 
     while True:
         success, frame = cam.get_frame()
         if not success or frame is None:
             continue
 
-        # Detect Pose Landmarks
         body_data = tracker.process_frame(frame)
-
-        # Apply Garment Overlay (uses the texture last loaded via load_garment)
         frame = overlay.apply_overlay(frame, body_data)
 
-        # Draw UI Text & Key Info
-        garment_name = garment_mgr.get_current_name()
+        garment_name = catalog.get_current_name()
         frame = ui.draw_status(
             frame,
             body_data,
@@ -50,18 +44,17 @@ def main():
 
         cv2.imshow("VTO Smart Mirror - Virtual Try-On", frame)
 
-        # Keyboard Event Handling
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q") or key == ord("Q"):
             break
         elif key == ord("n") or key == ord("N"):
-            new_path = garment_mgr.next_garment()
+            new_path = catalog.next_garment()
             if overlay.load_garment(new_path):
-                print(f"[INFO] Switched to: {garment_mgr.get_current_name()}")
+                print(f"[INFO] Switched to: {catalog.get_current_name()}")
         elif key == ord("p") or key == ord("P"):
-            new_path = garment_mgr.prev_garment()
+            new_path = catalog.prev_garment()
             if overlay.load_garment(new_path):
-                print(f"[INFO] Switched to: {garment_mgr.get_current_name()}")
+                print(f"[INFO] Switched to: {catalog.get_current_name()}")
 
     cam.release()
     tracker.close()
