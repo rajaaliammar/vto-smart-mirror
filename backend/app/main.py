@@ -38,6 +38,11 @@ app.add_middleware(
 app.include_router(catalog_router, prefix="/api/v1")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+PROJECT_ROOT = BACKEND_ROOT.parent
+CAPTURES_DIR = PROJECT_ROOT / "captures"
+CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/captures", StaticFiles(directory=str(CAPTURES_DIR)), name="captures")
+
 
 @app.get("/health")
 def health():

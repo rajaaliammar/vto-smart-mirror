@@ -87,6 +87,10 @@ class GarmentApiClient:
         current = self.get_current()
         return current["name"] if current else "None"
 
+    def get_current_category(self) -> str:
+        current = self.get_current()
+        return str(current.get("category", "tshirt")) if current else "tshirt"
+
     def get_current_image_path(self) -> str:
         current = self.get_current()
         if not current:
