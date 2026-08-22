@@ -3,7 +3,7 @@ PROJECT PROPOSAL: AI-POWERED VIRTUAL TRY-ON
 Next-Generation 3D Fitting & Interactive Smart Mirror Solution for Fashion Retailers
 Target Market: Fashion & Apparel Stores Core Technology: Computer Vision & Deep
 Learning 
-Deployment: In-Store Kiosk & Mobile App
+Deployment: In-Store Kiosk & Mobile Application
 1. Executive Summary
 The global retail industry is rapidly shifting towards interactive customer experiences. One of the biggest challenges
 customers face in physical clothing stores is the inconvenience of trying on multiple garments in traditional fitting
