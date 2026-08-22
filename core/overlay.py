@@ -2,12 +2,13 @@ import cv2
 import numpy as np
 import os
 
-# Fit to the tracked body: sleeve-to-sleeve ≈ 1.55× the live shoulder span.
-SHOULDER_SCALE = 1.55
-# Collar sits just above the shoulder line (not on the face).
-COLLAR_LIFT = 0.08
-# Hard cap so a landmark glitch cannot stretch the shirt across the whole frame.
-MAX_WIDTH_FRAME_FRAC = 0.50
+from core.garment_overlay import (
+    COLLAR_LIFT,
+    blend_garment_roi,
+    compute_garment_size,
+    feather_alpha_channel,
+)
+
 # Smooth pose jitter (hands entering the frame, brief dropouts).
 EMA_ALPHA = 0.3
 
@@ -46,6 +47,8 @@ class GarmentOverlay:
         image[hard == 0] = 0
         self.garment = self._crop_to_mask(image, hard)
         self.garment_path = garment_path
+        for key in ("width", "height"):
+            self._ema.pop(key, None)
         return True
 
     @staticmethod
@@ -225,7 +228,7 @@ class GarmentOverlay:
 
         hard = cls._largest_central_contour(hard)
         hard = cls._clear_edge_fringe(bgr, hard)
-        soft = cv2.GaussianBlur(hard, (5, 5), 0)
+        soft = feather_alpha_channel(hard)
         return hard, soft
 
     def apply_overlay(self, frame, body_data):
@@ -258,10 +261,15 @@ class GarmentOverlay:
         ry = self._smooth("ry", ry)
         shoulder_pixel_dist = abs(rx - lx)
 
-        target_width = int(shoulder_pixel_dist * SHOULDER_SCALE)
-        target_width = int(np.clip(target_width, 40, int(frame_w * MAX_WIDTH_FRAME_FRAC)))
-        aspect_ratio = self.garment.shape[0] / float(self.garment.shape[1])
-        target_height = int(target_width * aspect_ratio)
+        torso_length = self._torso_length(body_data, frame_w, frame_h, (lx + rx) * 0.5, (ly + ry) * 0.5)
+        target_width, target_height = compute_garment_size(
+            shoulder_pixel_dist,
+            torso_length,
+            self.garment.shape[0],
+            self.garment.shape[1],
+            frame_w,
+            frame_h,
+        )
         target_width = int(self._smooth("width", float(target_width)))
         target_height = int(self._smooth("height", float(target_height)))
         if target_width <= 0 or target_height <= 0:
@@ -272,6 +280,8 @@ class GarmentOverlay:
             (target_width, target_height),
             interpolation=cv2.INTER_AREA,
         )
+        if resized.shape[2] >= 4:
+            resized[:, :, 3] = feather_alpha_channel(resized[:, :, 3])
         garment_h, garment_w = resized.shape[:2]
 
         shoulder_center_x = int((lx + rx) / 2)
@@ -305,9 +315,29 @@ class GarmentOverlay:
         if crop.shape[2] < 4:
             return frame
 
-        alpha = (crop[:, :, 3].astype(np.float32) / 255.0)[:, :, np.newaxis]
-        blended = alpha * crop[:, :, :3].astype(np.float32) + (
-            1.0 - alpha
-        ) * frame_roi.astype(np.float32)
-        frame[y1:y1 + roi_h, x1:x1 + roi_w] = blended.astype(np.uint8)
+        frame[y1:y1 + roi_h, x1:x1 + roi_w] = blend_garment_roi(frame_roi, crop)
         return frame
+
+    def _torso_length(self, body_data, frame_w, frame_h, _shoulder_cx, shoulder_cy):
+        """Vertical shoulder-center to hip-center distance, EMA-smoothed."""
+        hinted = body_data.get("torso_length")
+        left_hip = body_data.get("left_hip")
+        right_hip = body_data.get("right_hip")
+
+        torso = None
+        if left_hip is not None and right_hip is not None:
+            lhx, lhy = float(left_hip[0]), float(left_hip[1])
+            rhx, rhy = float(right_hip[0]), float(right_hip[1])
+            if max(abs(lhx), abs(lhy), abs(rhx), abs(rhy)) <= 1.5:
+                lhx, rhx = lhx * frame_w, rhx * frame_w
+                lhy, rhy = lhy * frame_h, rhy * frame_h
+            lhy = self._smooth("lhy", lhy)
+            rhy = self._smooth("rhy", rhy)
+            hip_cy = (lhy + rhy) * 0.5
+            torso = abs(hip_cy - shoulder_cy)
+        elif hinted is not None:
+            torso = float(hinted)
+
+        if torso is None or torso <= 1:
+            return None
+        return self._smooth("torso", torso)

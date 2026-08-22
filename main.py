@@ -30,6 +30,17 @@ def _load_current(overlay, catalog) -> bool:
     return False
 
 
+def _draw_mirror_hud(hud, frame, catalog, live: bool):
+    return hud.draw(
+        frame,
+        catalog.get_current_name(),
+        catalog.get_current_category(),
+        catalog.get_current_size(),
+        catalog.get_current_price_label(),
+        live=live,
+    )
+
+
 def _countdown_label(elapsed: float):
     if elapsed < 1.0:
         return "3"
@@ -44,7 +55,7 @@ def _countdown_label(elapsed: float):
 
 def main():
     print("==========================================")
-    print(" VTO SMART MIRROR - PHASE 4 (QR SHARE)")
+    print(" VTO SMART MIRROR - PHASE 5 (PRODUCTION)")
     print("==========================================")
     print(" Controls:")
     print("  'N' / Swipe Right -> Next Garment")
@@ -90,7 +101,6 @@ def main():
         now = time.time()
 
         if state == STATE_SHOW_SNAPSHOT and frozen_frame is not None:
-            cam.get_frame()
             display = frozen_frame.copy()
             remaining = max(0, int(snapshot_until - now))
             cv2.putText(
@@ -114,11 +124,7 @@ def main():
                 cv2.LINE_AA,
             )
             display = overlay_qr_code(display, qr_image)
-            display = hud.draw(
-                display,
-                catalog.get_current_name(),
-                catalog.get_current_category(),
-            )
+            display = _draw_mirror_hud(hud, display, catalog, live=False)
             cv2.imshow("VTO Smart Mirror - Virtual Try-On", display)
             if now >= snapshot_until:
                 state = STATE_LIVE
@@ -175,11 +181,7 @@ def main():
                 gesture_banner_until = time.time() + GESTURE_BANNER_SEC
 
         frame = gestures.draw_fingertip(frame)
-        frame = hud.draw(
-            frame,
-            catalog.get_current_name(),
-            catalog.get_current_category(),
-        )
+        frame = _draw_mirror_hud(hud, frame, catalog, live=True)
         if time.time() < gesture_banner_until:
             frame = ui.draw_gesture(frame, gesture_banner)
 

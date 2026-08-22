@@ -54,21 +54,32 @@ class PoseTracker:
         if len(landmarks) < 13:
             return None
 
-        # Landmark Index 11 = Left Shoulder, 12 = Right Shoulder
-        left_shoulder_lm = landmarks[11]
-        right_shoulder_lm = landmarks[12]
+        def _xy(lm, min_visibility: float = 0.35):
+            vis = getattr(lm, "visibility", 1.0)
+            if vis is not None and vis < min_visibility:
+                return None
+            return np.array(
+                [lm.x * img_width, lm.y * img_height],
+                dtype=np.float32,
+            )
 
-        left_shoulder = np.array(
-            [left_shoulder_lm.x * img_width, left_shoulder_lm.y * img_height],
-            dtype=np.float32,
-        )
-        right_shoulder = np.array(
-            [right_shoulder_lm.x * img_width, right_shoulder_lm.y * img_height],
-            dtype=np.float32,
-        )
+        # 11/12 = shoulders, 23/24 = hips (MediaPipe Pose).
+        left_shoulder = _xy(landmarks[11], min_visibility=0.20)
+        right_shoulder = _xy(landmarks[12], min_visibility=0.20)
+        if left_shoulder is None or right_shoulder is None:
+            return None
+
+        left_hip = _xy(landmarks[23]) if len(landmarks) > 24 else None
+        right_hip = _xy(landmarks[24]) if len(landmarks) > 24 else None
 
         shoulder_width = float(np.linalg.norm(left_shoulder - right_shoulder))
         center = (left_shoulder + right_shoulder) * 0.5
+
+        torso_length = None
+        hip_center = None
+        if left_hip is not None and right_hip is not None:
+            hip_center = (left_hip + right_hip) * 0.5
+            torso_length = float(abs(hip_center[1] - center[1]))
 
         angle_rad = math.atan2(
             right_shoulder[1] - left_shoulder[1],
@@ -78,9 +89,13 @@ class PoseTracker:
         return {
             "left_shoulder": (int(left_shoulder[0]), int(left_shoulder[1])),
             "right_shoulder": (int(right_shoulder[0]), int(right_shoulder[1])),
+            "left_hip": None if left_hip is None else (int(left_hip[0]), int(left_hip[1])),
+            "right_hip": None if right_hip is None else (int(right_hip[0]), int(right_hip[1])),
             "shoulder_width": shoulder_width,
+            "torso_length": torso_length,
             "chest_center": (int(center[0]), int(center[1])),
             "shoulder_center": (float(center[0]), float(center[1])),
+            "hip_center": None if hip_center is None else (float(hip_center[0]), float(hip_center[1])),
             "angle_deg": math.degrees(angle_rad),
         }
 

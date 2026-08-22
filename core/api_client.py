@@ -91,6 +91,32 @@ class GarmentApiClient:
         current = self.get_current()
         return str(current.get("category", "tshirt")) if current else "tshirt"
 
+    def get_current_size(self) -> str:
+        current = self.get_current()
+        if not current:
+            return "M"
+        sizes = current.get("available_sizes") or ["M"]
+        sizes = [str(s).upper() for s in sizes]
+        if "M" in sizes:
+            return "M"
+        return sizes[len(sizes) // 2]
+
+    def get_current_price_label(self) -> str:
+        current = self.get_current()
+        if current and current.get("price_label"):
+            return str(current["price_label"])
+        usd, pkr = self._mock_price(current)
+        return f"${usd:.2f} / PKR {pkr:,}"
+
+    def _mock_price(self, current) -> tuple:
+        presets = ((49.99, 3500), (54.99, 3850), (44.99, 3150), (59.99, 4200))
+        if current and current.get("price_usd") is not None:
+            usd = float(current["price_usd"])
+            pkr = int(current.get("price_pkr") or round(usd * 70))
+            return usd, pkr
+        idx = self.current_index % len(presets)
+        return presets[idx]
+
     def get_current_image_path(self) -> str:
         current = self.get_current()
         if not current:
