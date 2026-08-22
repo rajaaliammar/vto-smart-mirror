@@ -2,7 +2,7 @@ PROJECT PROPOSAL: AI-POWERED VIRTUAL TRY-ON
 (VTO) SYSTEM
 Next-Generation 3D Fitting & Interactive Smart Mirror Solution for Fashion Retailers
 Target Market: Fashion & Apparel Stores Core Technology: Computer Vision & Deep
-Learning
+Learning 
 Deployment: In-Store Kiosk & Mobile App
 1. Executive Summary
 The global retail industry is rapidly shifting towards interactive customer experiences. One of the biggest challenges
@@ -16,6 +16,7 @@ Key Value Proposition for Stores
 Increases customer engagement, speeds up the decision-making process, unlocks access to 100% of the store's
 inventory (including out-of-stock or past collections), and provides retailers with actionable analytics on customer
 preferences.
+
 2. Key Features & Product Capabilities
 1. Real-Time 3D Video Fitting (Smart Mirror)
 Live camera video feed overlays 3D/2D digital garments onto the customer's body with natural fabric draping,
