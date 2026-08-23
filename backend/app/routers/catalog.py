@@ -14,7 +14,16 @@ router = APIRouter(prefix="/garments", tags=["garments"])
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 GARMENTS_DIR = BACKEND_ROOT / "static" / "garments"
 CATALOG_PATH = BACKEND_ROOT / "static" / "garments_catalog.json"
-PROJECT_SAMPLE_DIR = BACKEND_ROOT.parent / "assets" / "sample_clothes" / "tshirts"
+PROJECT_SAMPLE_ROOT = BACKEND_ROOT.parent / "assets" / "sample_clothes"
+FOLDER_CATEGORIES = {
+    "tshirts": "tshirt",
+    "tshirt": "tshirt",
+    "shirts": "tshirt",
+    "pants": "pants",
+    "jeans": "jeans",
+    "bottoms": "pants",
+    "trousers": "pants",
+}
 
 ALLOWED_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 DEFAULT_SIZES = ["S", "M", "L", "XL"]
@@ -49,18 +58,50 @@ def _save_catalog(catalog: Dict[str, dict]) -> None:
         json.dump(catalog, handle, indent=2)
 
 
+def _folder_category(name: str) -> str:
+    key = name.lower().strip()
+    return FOLDER_CATEGORIES.get(key, key.rstrip("s") or "tshirt")
+
+
+def _infer_category(filename: str, fallback: str = "tshirt") -> str:
+    stem = Path(filename).stem.lower()
+    if "jean" in stem or "pant" in stem:
+        return "jeans"
+    return fallback
+
+
 def _seed_from_disk() -> None:
-    """Copy sample tshirts into static/garments and register missing entries."""
+    """Copy sample clothes into static/garments and register missing entries."""
     GARMENTS_DIR.mkdir(parents=True, exist_ok=True)
     catalog = _load_catalog()
 
-    if PROJECT_SAMPLE_DIR.is_dir():
-        for source in PROJECT_SAMPLE_DIR.iterdir():
-            if source.suffix.lower() not in ALLOWED_EXT:
-                continue
-            dest = GARMENTS_DIR / source.name.lower()
-            if not dest.exists():
-                shutil.copy2(source, dest)
+    if PROJECT_SAMPLE_ROOT.is_dir():
+        for folder in PROJECT_SAMPLE_ROOT.iterdir():
+            if folder.is_dir():
+                category = _folder_category(folder.name)
+                for source in folder.iterdir():
+                    if source.suffix.lower() not in ALLOWED_EXT:
+                        continue
+                    dest = GARMENTS_DIR / source.name.lower()
+                    if not dest.exists():
+                        shutil.copy2(source, dest)
+                    garment_id = _slug(source.stem)
+                    if garment_id in catalog:
+                        if _infer_category(source.name, category) != "tshirt":
+                            catalog[garment_id]["category"] = _infer_category(source.name, category)
+                        continue
+                    catalog[garment_id] = {
+                        "id": garment_id,
+                        "name": _display_name(source.stem),
+                        "category": _infer_category(source.name, category),
+                        "filename": dest.name,
+                        "available_sizes": DEFAULT_SIZES,
+                        "default_scale": DEFAULT_SCALE,
+                    }
+            elif folder.is_file() and folder.suffix.lower() in ALLOWED_EXT:
+                dest = GARMENTS_DIR / folder.name.lower()
+                if not dest.exists():
+                    shutil.copy2(folder, dest)
 
     for image_path in sorted(GARMENTS_DIR.iterdir()):
         if not image_path.is_file() or image_path.suffix.lower() not in ALLOWED_EXT:
@@ -71,7 +112,7 @@ def _seed_from_disk() -> None:
         catalog[garment_id] = {
             "id": garment_id,
             "name": _display_name(image_path.stem),
-            "category": "tshirt",
+            "category": _infer_category(image_path.name),
             "filename": image_path.name,
             "available_sizes": DEFAULT_SIZES,
             "default_scale": DEFAULT_SCALE,

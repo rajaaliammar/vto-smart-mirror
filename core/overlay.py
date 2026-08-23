@@ -6,10 +6,12 @@ from core.garment_overlay import (
     AMBIENT_REF_V,
     COLOR_VARIANTS,
     COLLAR_LIFT,
+    WAIST_RISE,
     adapt_garment_lighting,
     apply_palette_color,
     blend_garment_roi,
     compute_garment_size,
+    compute_pants_size,
     estimate_torso_ambient,
     feather_alpha_channel,
 )
@@ -24,6 +26,9 @@ class GarmentOverlay:
     def __init__(self, garment_path: str = None):
         self.garment = None
         self.garment_path = None
+        self.lower_garment = None
+        self.lower_path = None
+        self.outfit_mode = "upper"
         self._ema = {}
         self._cache = {}
         self._tint_cache = {}
@@ -38,6 +43,19 @@ class GarmentOverlay:
 
     def current_color(self):
         return COLOR_VARIANTS[self.color_index]
+
+    def toggle_outfit_mode(self) -> str:
+        self.outfit_mode = "full" if self.outfit_mode == "upper" else "upper"
+        if self.outfit_mode != "full":
+            self.clear_lower_garment()
+        return self.outfit_mode
+
+    def clear_lower_garment(self) -> None:
+        """Drop pants so UPPER ONLY never blits leftover lower assets."""
+        self.lower_garment = None
+        self.lower_path = None
+        for key in ("p_width", "p_height", "hlx", "hly", "hrx", "hry"):
+            self._ema.pop(key, None)
 
     def _tinted_source(self):
         if self.garment is None:
@@ -68,36 +86,63 @@ class GarmentOverlay:
         return blended
 
     def load_garment(self, garment_path: str) -> bool:
-        if not garment_path:
-            self.garment = None
-            self.garment_path = None
+        prepared = self._prepare_layer(garment_path)
+        if prepared is None:
+            if not garment_path:
+                self.garment = None
+                self.garment_path = None
             return False
+        self.garment = prepared
+        self.garment_path = garment_path
+        for key in ("width", "height"):
+            self._ema.pop(key, None)
+        return True
 
-        if garment_path == self.garment_path and self.garment is not None:
-            return True
+    def load_lower_garment(self, garment_path: str) -> bool:
+        prepared = self._prepare_layer(garment_path)
+        if prepared is None:
+            if not garment_path:
+                self.lower_garment = None
+                self.lower_path = None
+            return False
+        self.lower_garment = prepared
+        self.lower_path = garment_path
+        for key in ("p_width", "p_height"):
+            self._ema.pop(key, None)
+        return True
 
+    def _prepare_layer(self, garment_path: str):
+        if not garment_path:
+            return None
         cached = self._cache.get(garment_path)
         if cached is not None:
-            self.garment = cached
-            self.garment_path = garment_path
-            for key in ("width", "height"):
-                self._ema.pop(key, None)
-            return True
+            return cached
 
         image = self._read_bgra(garment_path)
         if image is None:
             print(f"[ERROR] Could not load garment image: {garment_path}")
-            return False
+            return None
 
-        hard, soft = self._extract_shirt_mask(image)
-        image[:, :, 3] = soft
-        image[hard == 0] = 0
-        self.garment = self._crop_to_mask(image, hard)
-        self.garment_path = garment_path
-        self._cache[garment_path] = self.garment
-        for key in ("width", "height"):
-            self._ema.pop(key, None)
-        return True
+        if self._has_cutout_alpha(image):
+            hard = np.where(image[:, :, 3] > 16, 255, 0).astype(np.uint8)
+            soft = feather_alpha_channel(hard)
+            image[:, :, 3] = np.minimum(image[:, :, 3], soft)
+            image[hard == 0] = 0
+        else:
+            hard, soft = self._extract_shirt_mask(image)
+            image[:, :, 3] = soft
+            image[hard == 0] = 0
+
+        cropped = self._crop_to_mask(image, np.where(image[:, :, 3] > 8, 255, 0).astype(np.uint8))
+        self._cache[garment_path] = cropped
+        return cropped
+
+    @staticmethod
+    def _has_cutout_alpha(image: np.ndarray) -> bool:
+        if image is None or image.ndim < 3 or image.shape[2] < 4:
+            return False
+        frac = float(np.mean(image[:, :, 3] > 20))
+        return 0.06 < frac < 0.92
 
     @staticmethod
     def _read_bgra(garment_path: str):
@@ -280,40 +325,50 @@ class GarmentOverlay:
         return hard, soft
 
     def apply_overlay(self, frame, body_data):
-        if frame is None or self.garment is None:
+        if frame is None or not body_data or not isinstance(body_data, dict):
             return frame
-        if not body_data or not isinstance(body_data, dict):
+        has_upper = self.garment is not None
+        has_lower = (
+            self.outfit_mode == "full"
+            and self.lower_garment is not None
+            and self.lower_path
+        )
+        if not has_upper and not has_lower:
             return frame
 
+        ambient_v = self._update_ambient(frame, body_data)
+        if has_lower:
+            frame = self._apply_lower(frame, body_data, ambient_v)
+        if has_upper:
+            frame = self._apply_upper(frame, body_data, ambient_v)
+        return frame
+
+    def _apply_upper(self, frame, body_data, ambient_v):
         left_shoulder = body_data.get("left_shoulder")
         right_shoulder = body_data.get("right_shoulder")
         if left_shoulder is None or right_shoulder is None:
             return frame
 
         frame_h, frame_w = frame.shape[:2]
-        lx, ly = float(left_shoulder[0]), float(left_shoulder[1])
-        rx, ry = float(right_shoulder[0]), float(right_shoulder[1])
-
-        # Landmarks may be normalized (0-1) or already in pixels.
-        if max(abs(lx), abs(ly), abs(rx), abs(ry)) <= 1.5:
-            lx, rx = lx * frame_w, rx * frame_w
-            ly, ry = ly * frame_h, ry * frame_h
-
-        shoulder_pixel_dist = abs(rx - lx)
-        if shoulder_pixel_dist <= 1:
+        left = self._as_xy(left_shoulder, frame_w, frame_h)
+        right = self._as_xy(right_shoulder, frame_w, frame_h)
+        if left is None or right is None:
             return frame
+        lx, ly = left
+        rx, ry = right
 
         lx = self._smooth("lx", lx)
         ly = self._smooth("ly", ly)
         rx = self._smooth("rx", rx)
         ry = self._smooth("ry", ry)
         shoulder_pixel_dist = abs(rx - lx)
+        if shoulder_pixel_dist <= 1:
+            return frame
 
         source = self._tinted_source()
         if source is None:
             return frame
 
-        ambient_v = self._update_ambient(frame, body_data)
         torso_length = self._torso_length(body_data, frame_w, frame_h, (lx + rx) * 0.5, (ly + ry) * 0.5)
         target_width, target_height = compute_garment_size(
             shoulder_pixel_dist,
@@ -328,49 +383,106 @@ class GarmentOverlay:
         if target_width <= 0 or target_height <= 0:
             return frame
 
-        resized = cv2.resize(
-            source,
-            (target_width, target_height),
-            interpolation=cv2.INTER_AREA,
-        )
+        resized = cv2.resize(source, (target_width, target_height), interpolation=cv2.INTER_AREA)
         resized = adapt_garment_lighting(resized, ambient_v)
         if resized.shape[2] >= 4:
             resized[:, :, 3] = feather_alpha_channel(resized[:, :, 3])
+
         garment_h, garment_w = resized.shape[:2]
+        x_offset = int((lx + rx) / 2 - garment_w // 2)
+        y_offset = int((ly + ry) / 2 - int(garment_h * COLLAR_LIFT))
+        return self._blit_layer(frame, resized, x_offset, y_offset)
 
-        shoulder_center_x = int((lx + rx) / 2)
-        shoulder_center_y = int((ly + ry) / 2)
+    def _apply_lower(self, frame, body_data, ambient_v):
+        if self.outfit_mode != "full":
+            return frame
+        source = self.lower_garment
+        if source is None:
+            return frame
+        frame_h, frame_w = frame.shape[:2]
+        left_hip = self._as_xy(body_data.get("left_hip"), frame_w, frame_h)
+        right_hip = self._as_xy(body_data.get("right_hip"), frame_w, frame_h)
+        if left_hip is None or right_hip is None:
+            return frame
 
-        x_offset = int(shoulder_center_x - garment_w // 2)
-        y_offset = int(shoulder_center_y - int(garment_h * COLLAR_LIFT))
+        lx = self._smooth("hlx", left_hip[0])
+        ly = self._smooth("hly", left_hip[1])
+        rx = self._smooth("hrx", right_hip[0])
+        ry = self._smooth("hry", right_hip[1])
+        hip_width = abs(rx - lx)
+        if hip_width <= 1:
+            hip_width = float(body_data.get("hip_width") or 0)
+        if hip_width <= 1:
+            return frame
 
+        hip_cx = (lx + rx) * 0.5
+        hip_cy = (ly + ry) * 0.5
+        leg_length = body_data.get("leg_length")
+        left_ankle = self._as_xy(body_data.get("left_ankle"), frame_w, frame_h)
+        right_ankle = self._as_xy(body_data.get("right_ankle"), frame_w, frame_h)
+        if left_ankle is not None and right_ankle is not None:
+            ankle_cy = (left_ankle[1] + right_ankle[1]) * 0.5
+            leg_length = abs(ankle_cy - hip_cy)
+        if not leg_length:
+            torso = body_data.get("torso_length")
+            leg_length = float(torso) * 1.85 if torso else hip_width * 2.4
+
+        target_width, target_height = compute_pants_size(
+            hip_width,
+            float(leg_length),
+            source.shape[0],
+            source.shape[1],
+            frame_w,
+            frame_h,
+        )
+        target_width = int(self._smooth("p_width", float(target_width)))
+        target_height = int(self._smooth("p_height", float(target_height)))
+        if target_width <= 0 or target_height <= 0:
+            return frame
+
+        resized = cv2.resize(source, (target_width, target_height), interpolation=cv2.INTER_AREA)
+        resized = adapt_garment_lighting(resized, ambient_v)
+        if resized.shape[2] >= 4:
+            resized[:, :, 3] = feather_alpha_channel(resized[:, :, 3])
+
+        garment_h, garment_w = resized.shape[:2]
+        x_offset = int(hip_cx - garment_w // 2)
+        y_offset = int(hip_cy - int(garment_h * WAIST_RISE))
+        return self._blit_layer(frame, resized, x_offset, y_offset)
+
+    def _blit_layer(self, frame, layer, x_offset, y_offset):
+        frame_h, frame_w = frame.shape[:2]
+        garment_h, garment_w = layer.shape[:2]
         x1 = int(np.clip(x_offset, 0, frame_w))
         y1 = int(np.clip(y_offset, 0, frame_h))
         x2 = int(np.clip(x_offset + garment_w, 0, frame_w))
         y2 = int(np.clip(y_offset + garment_h, 0, frame_h))
-
         gx1 = int(np.clip(x1 - x_offset, 0, garment_w))
         gy1 = int(np.clip(y1 - y_offset, 0, garment_h))
         gx2 = int(np.clip(gx1 + (x2 - x1), 0, garment_w))
         gy2 = int(np.clip(gy1 + (y2 - y1), 0, garment_h))
-
         if x2 <= x1 or y2 <= y1 or gx2 <= gx1 or gy2 <= gy1:
             return frame
-
-        crop = resized[gy1:gy2, gx1:gx2]
+        crop = layer[gy1:gy2, gx1:gx2]
         frame_roi = frame[y1:y2, x1:x2]
         roi_h = min(crop.shape[0], frame_roi.shape[0], y2 - y1)
         roi_w = min(crop.shape[1], frame_roi.shape[1], x2 - x1)
-        if roi_h <= 0 or roi_w <= 0:
+        if roi_h <= 0 or roi_w <= 0 or crop.shape[2] < 4:
             return frame
-
         crop = crop[:roi_h, :roi_w]
-        frame_roi = frame[y1:y1 + roi_h, x1:x1 + roi_w]
-        if crop.shape[2] < 4:
-            return frame
-
-        frame[y1:y1 + roi_h, x1:x1 + roi_w] = blend_garment_roi(frame_roi, crop)
+        frame[y1:y1 + roi_h, x1:x1 + roi_w] = blend_garment_roi(
+            frame[y1:y1 + roi_h, x1:x1 + roi_w], crop
+        )
         return frame
+
+    @staticmethod
+    def _as_xy(point, frame_w, frame_h):
+        if point is None:
+            return None
+        x, y = float(point[0]), float(point[1])
+        if max(abs(x), abs(y)) <= 1.5:
+            x, y = x * frame_w, y * frame_h
+        return x, y
 
     def _torso_length(self, body_data, frame_w, frame_h, _shoulder_cx, shoulder_cy):
         """Vertical shoulder-center to hip-center distance, EMA-smoothed."""

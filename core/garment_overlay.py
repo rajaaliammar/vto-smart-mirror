@@ -1,6 +1,7 @@
 """Phase 5 body fitting and PNG edge-feathering for the garment overlay."""
 
 from typing import Optional, Tuple
+import os
 
 import cv2
 import numpy as np
@@ -70,6 +71,115 @@ def blend_garment_roi(frame_roi: np.ndarray, crop: np.ndarray) -> np.ndarray:
         np.float32
     )
     return blended.astype(np.uint8)
+
+
+HIP_SCALE = 1.48
+LEG_LENGTH_SCALE = 1.06
+WAIST_RISE = 0.12
+MAX_PANTS_WIDTH_FRAC = 0.52
+MAX_PANTS_HEIGHT_FRAC = 0.82
+PANTS_ASPECT_MIN = 0.78
+PANTS_ASPECT_MAX = 1.28
+
+
+def compute_pants_size(
+    hip_width: float,
+    leg_length: Optional[float],
+    garment_h: int,
+    garment_w: int,
+    frame_w: int,
+    frame_h: int,
+) -> Tuple[int, int]:
+    """Scale jeans width from hips and length from hip-to-ankle distance."""
+    target_width = int(max(hip_width, 1.0) * HIP_SCALE)
+    target_width = int(np.clip(target_width, 40, int(frame_w * MAX_PANTS_WIDTH_FRAC)))
+
+    aspect = garment_h / float(max(garment_w, 1))
+    aspect_height = target_width * aspect
+
+    if leg_length is not None and leg_length > 12:
+        body_height = float(leg_length) * LEG_LENGTH_SCALE
+        lo = aspect_height * PANTS_ASPECT_MIN
+        hi = aspect_height * PANTS_ASPECT_MAX
+        target_height = float(np.clip(body_height, lo, hi))
+    else:
+        target_height = aspect_height
+
+    target_height = float(np.clip(target_height, 50, int(frame_h * MAX_PANTS_HEIGHT_FRAC)))
+    return max(1, int(target_width)), max(1, int(target_height))
+
+
+def render_default_jeans(width: int = 500, height: int = 860) -> np.ndarray:
+    """Procedural jeans PNG (BGRA) used when no lower-body asset is on disk."""
+    img = np.zeros((height, width, 4), dtype=np.uint8)
+    mask = np.zeros((height, width), dtype=np.uint8)
+    cx = width // 2
+    waist_y = int(height * 0.03)
+    hip_y = int(height * 0.18)
+    crotch_y = int(height * 0.34)
+    knee_y = int(height * 0.64)
+    ankle_y = int(height * 0.97)
+    waist_half = int(width * 0.23)
+    hip_half = int(width * 0.265)
+    knee_outer = int(width * 0.20)
+    ankle_half = int(width * 0.15)
+    inseam = int(width * 0.032)
+
+    left = np.array(
+        [
+            [cx - waist_half, waist_y],
+            [cx - 3, waist_y],
+            [cx - 3, crotch_y - 12],
+            [cx - inseam, crotch_y],
+            [cx - inseam, ankle_y],
+            [cx - ankle_half - inseam, ankle_y],
+            [cx - knee_outer, knee_y],
+            [cx - hip_half, hip_y],
+        ],
+        dtype=np.int32,
+    )
+    right = np.array(
+        [
+            [cx + 3, waist_y],
+            [cx + waist_half, waist_y],
+            [cx + hip_half, hip_y],
+            [cx + knee_outer, knee_y],
+            [cx + ankle_half + inseam, ankle_y],
+            [cx + inseam, ankle_y],
+            [cx + inseam, crotch_y],
+            [cx + 3, crotch_y - 12],
+        ],
+        dtype=np.int32,
+    )
+    cv2.fillPoly(mask, [left, right], 255)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    denim = np.zeros((height, width, 3), dtype=np.uint8)
+    denim[:, :] = (86, 54, 26)
+    shade = np.linspace(1.08, 0.82, height, dtype=np.float32)[:, None]
+    denim = np.clip(denim.astype(np.float32) * shade[:, :, None], 0, 255).astype(np.uint8)
+    stitch = (40, 160, 210)
+    cv2.line(denim, (cx - waist_half + 8, waist_y + 10), (cx + waist_half - 8, waist_y + 10), stitch, 2)
+    cv2.line(denim, (cx - inseam - 6, crotch_y), (cx - inseam - 6, ankle_y - 8), stitch, 1)
+    cv2.line(denim, (cx + inseam + 6, crotch_y), (cx + inseam + 6, ankle_y - 8), stitch, 1)
+
+    img[:, :, :3] = denim
+    img[:, :, 3] = mask
+    img[mask == 0] = 0
+    return img
+
+
+def ensure_default_pants(project_root: Optional[str] = None) -> str:
+    """Write assets/sample_clothes/pants/jeans.png if it does not already exist."""
+    root = project_root or os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    dest = os.path.join(root, "assets", "sample_clothes", "pants", "jeans.png")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    if os.path.isfile(dest) and os.path.getsize(dest) > 2000:
+        return dest
+    image = render_default_jeans()
+    cv2.imwrite(dest, image)
+    return dest
 
 
 # OpenCV hue units (0-179). Swatches are BGR for HUD drawing.

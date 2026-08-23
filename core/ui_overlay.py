@@ -7,6 +7,37 @@ CURSOR_CORE = (80, 255, 140)
 CURSOR_RING = (0, 230, 255)
 CURSOR_GLOW = (0, 160, 255)
 
+# Distance-invariant: shoulder span / torso height. Typical adult ~0.83.
+SIZE_RATIO_CENTERS = {"S": 0.75, "M": 0.84, "L": 0.93}
+
+
+def recommend_size(body_data, frame_shape=None):
+    """Recommend S/M/L from shoulder-to-torso proportions only."""
+    default = {
+        "size": "M",
+        "score": 0,
+        "label": "Size M - -- Fit Match",
+        "ratio": None,
+    }
+    if not body_data:
+        return default
+
+    shoulder_px = float(body_data.get("shoulder_width") or 0)
+    torso_px = float(body_data.get("torso_length") or 0)
+    if shoulder_px < 12 or torso_px < 12:
+        return default
+
+    ratio = shoulder_px / torso_px
+    size = min(SIZE_RATIO_CENTERS, key=lambda key: abs(SIZE_RATIO_CENTERS[key] - ratio))
+    dist = abs(SIZE_RATIO_CENTERS[size] - ratio)
+    score = int(np.clip(99.0 - dist * 160.0, 78, 99))
+    return {
+        "size": size,
+        "score": score,
+        "label": f"Size {size} - {score}% Fit Match",
+        "ratio": round(ratio, 3),
+    }
+
 
 class MirrorHUD:
     """Retail top bar: garment metadata, live FPS pill, and swipe guides."""
@@ -14,6 +45,9 @@ class MirrorHUD:
     def __init__(self):
         self._prev_time = time.perf_counter()
         self.fps = 0.0
+        self._fit_votes = []
+        self._stable_size = "M"
+        self._smooth_score = 90.0
 
     def update_fps(self) -> int:
         now = time.perf_counter()
@@ -37,6 +71,8 @@ class MirrorHUD:
         color_variant=None,
         color_variants=None,
         color_index: int = 0,
+        fit_advice=None,
+        outfit_mode: str = "upper",
     ):
         if frame is None:
             return frame
@@ -97,6 +133,7 @@ class MirrorHUD:
 
         self._draw_live_pill(frame, w, fps, live=live)
         self._draw_swipe_guides(frame, w)
+        self._draw_fit_advisor(frame, fit_advice, outfit_mode, bar_h)
         return frame
 
     @staticmethod
@@ -166,6 +203,64 @@ class MirrorHUD:
             str(label),
             (text_x, y + size - 2),
             cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (230, 230, 230),
+            1,
+            cv2.LINE_AA,
+        )
+
+    def _stabilize_fit(self, fit_advice):
+        if not fit_advice:
+            return {"size": self._stable_size, "score": int(self._smooth_score), "label": f"Size {self._stable_size} - -- Fit Match"}
+        size = str(fit_advice.get("size") or "M").upper()
+        score = float(fit_advice.get("score") or self._smooth_score)
+        self._fit_votes.append(size)
+        self._fit_votes = self._fit_votes[-12:]
+        winner = max(set(self._fit_votes), key=self._fit_votes.count)
+        if self._fit_votes.count(winner) >= 4 or winner == self._stable_size:
+            self._stable_size = winner
+        self._smooth_score = 0.75 * self._smooth_score + 0.25 * score
+        shown = int(round(self._smooth_score))
+        return {
+            "size": self._stable_size,
+            "score": shown,
+            "label": f"Size {self._stable_size} - {shown}% Fit Match",
+        }
+
+    def _draw_fit_advisor(self, frame, fit_advice, outfit_mode: str, bar_h: int):
+        advice = self._stabilize_fit(fit_advice)
+        h, w = frame.shape[:2]
+        y1 = bar_h + 8
+        title = "AI FIT ADVISOR"
+        body = advice["label"]
+        mode = "FULL OUTFIT" if outfit_mode == "full" else "UPPER ONLY"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        (tw, th), _ = cv2.getTextSize(title, font, 0.42, 1)
+        (bw, bh), _ = cv2.getTextSize(body, font, 0.50, 2)
+        (mw, mh), _ = cv2.getTextSize(mode, font, 0.42, 1)
+        box_w = max(tw, bw) + 28
+        box_h = th + bh + 22
+        x1, y2 = 16, min(h - 8, y1 + box_h)
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x1, y1), (x1 + box_w, y2), (18, 42, 36), -1)
+        cv2.addWeighted(overlay, 0.78, frame, 0.22, 0, dst=frame)
+        cv2.rectangle(frame, (x1, y1), (x1 + box_w, y2), (70, 210, 160), 1)
+        cv2.putText(frame, title, (x1 + 12, y1 + th + 8), font, 0.42, (160, 230, 200), 1, cv2.LINE_AA)
+        cv2.putText(frame, body, (x1 + 12, y1 + th + bh + 14), font, 0.50, (240, 240, 240), 2, cv2.LINE_AA)
+
+        mx2 = w - 18
+        mx1 = mx2 - mw - 28
+        my1 = y1
+        my2 = y1 + mh + 16
+        chip = frame.copy()
+        fill = (40, 90, 40) if outfit_mode == "full" else (50, 50, 50)
+        cv2.rectangle(chip, (mx1, my1), (mx2, my2), fill, -1)
+        cv2.addWeighted(chip, 0.82, frame, 0.18, 0, dst=frame)
+        cv2.putText(
+            frame,
+            mode,
+            (mx1 + 14, my1 + mh + 6),
+            font,
             0.42,
             (230, 230, 230),
             1,

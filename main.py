@@ -11,7 +11,7 @@ from core.overlay import GarmentOverlay
 from core.qr_generator import capture_download_url, generate_qr_image, overlay_qr_code
 from core.snapshot import save_snapshot_async
 from core.tracker import PoseTracker
-from core.ui_overlay import MirrorHUD
+from core.ui_overlay import MirrorHUD, recommend_size
 from core.visualization import UIOverlay
 
 STATE_LIVE = "LIVE"
@@ -41,9 +41,10 @@ def _switch_garment(overlay, catalog, direction: str, banner: str):
     return banner
 
 
-def _draw_mirror_hud(hud, frame, catalog, live: bool, overlay=None):
+def _draw_mirror_hud(hud, frame, catalog, live: bool, overlay=None, fit_advice=None):
     color = overlay.current_color() if overlay is not None else None
     index = overlay.color_index if overlay is not None else 0
+    outfit_mode = overlay.outfit_mode if overlay is not None else "upper"
     return hud.draw(
         frame,
         catalog.get_current_name(),
@@ -54,23 +55,29 @@ def _draw_mirror_hud(hud, frame, catalog, live: bool, overlay=None):
         color_variant=color,
         color_variants=COLOR_VARIANTS,
         color_index=index,
+        fit_advice=fit_advice,
+        outfit_mode=outfit_mode,
     )
 
 
 def _preload_catalog(overlay, catalog):
-    saved = catalog.current_index
-    for index in range(len(catalog.garments)):
+    shirts = catalog.upper_items or []
+    saved_upper = catalog.upper_index
+    for index in range(len(shirts)):
+        catalog.upper_index = index
         catalog.current_index = index
         path = catalog.get_current_image_path()
         if path:
             overlay.load_garment(path)
-    catalog.current_index = saved
+    catalog.upper_index = saved_upper
+    catalog.current_index = saved_upper
+    overlay.clear_lower_garment()
     path = catalog.get_current_image_path()
     if path:
         overlay.load_garment(path)
         print(
             f"[INFO] Active garment: {catalog.get_current_name()} "
-            f"({len(catalog.garments)} in catalog)"
+            f"({len(shirts)} shirts in catalog)"
         )
 
 
@@ -88,11 +95,12 @@ def _countdown_label(elapsed: float):
 
 def main():
     print("==========================================")
-    print(" VTO SMART MIRROR - PHASE 7 (LIGHTING + TINT)")
+    print(" VTO SMART MIRROR - PHASE 8 (OUTFIT + AI FIT)")
     print("==========================================")
     print(" Controls:")
-    print("  'N' / Swipe Right -> Next Garment")
-    print("  'P' / Swipe Left  -> Previous Garment")
+    print("  'N' / Swipe Right -> Next Shirt")
+    print("  'P' / Swipe Left  -> Previous Shirt")
+    print("  'O' -> Toggle Outfit (Upper Only / Full Outfit)")
     print("  'C' -> Cycle Color (Original / Crimson / Royal / Emerald / Charcoal)")
     print("  'S' -> Snapshot + QR (3-2-1 CHEESE!)")
     print("  'Q' -> Exit Application")
@@ -113,7 +121,9 @@ def main():
     catalog = GarmentApiClient()
 
     overlay = GarmentOverlay()
+    overlay.outfit_mode = "upper"
     _preload_catalog(overlay, catalog)
+    print("[INFO] Mode: UPPER ONLY (press O for optional full outfit)")
 
     gesture_banner = ""
     gesture_banner_until = 0.0
@@ -215,7 +225,10 @@ def main():
         frame = overlay.apply_overlay(frame, display_body)
         composite = frame.copy()
 
-        frame = _draw_mirror_hud(hud, frame, catalog, live=True, overlay=overlay)
+        fit_advice = recommend_size(display_body, frame.shape[:2])
+        frame = _draw_mirror_hud(
+            hud, frame, catalog, live=True, overlay=overlay, fit_advice=fit_advice
+        )
         frame = hud.draw_hand_cursor(frame, gestures.last_fingertip)
         if time.time() < gesture_banner_until:
             frame = ui.draw_gesture(frame, gesture_banner)
@@ -258,6 +271,21 @@ def main():
         elif key == ord("c") or key == ord("C"):
             variant = overlay.cycle_color()
             print(f"[INFO] Color: {variant['label']}")
+        elif key == ord("o") or key == ord("O"):
+            if overlay.outfit_mode != "full":
+                lower_path = catalog.get_current_lower_path()
+                if not lower_path:
+                    print("[WARN] No pants/jeans in catalog. Staying on UPPER ONLY.")
+                elif overlay.load_lower_garment(lower_path):
+                    overlay.outfit_mode = "full"
+                    print("[INFO] Outfit mode: FULL (shirt + pants)")
+                else:
+                    overlay.outfit_mode = "upper"
+                    print("[WARN] Pants image failed to load. Staying on UPPER ONLY.")
+            else:
+                overlay.outfit_mode = "upper"
+                overlay.clear_lower_garment()
+                print("[INFO] Outfit mode: UPPER ONLY")
         elif key == ord("s") or key == ord("S"):
             if countdown_started_at is None and state == STATE_LIVE:
                 countdown_started_at = time.time()

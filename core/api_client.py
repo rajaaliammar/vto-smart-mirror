@@ -9,6 +9,17 @@ import requests
 API_BASE_URL = "http://127.0.0.1:8000/api/v1"
 LOCAL_GARMENTS_DIR = os.path.join("assets", "sample_clothes")
 VALID_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+UPPER_CATEGORIES = {"tshirt", "shirt", "top", "hoodie", "jacket"}
+LOWER_CATEGORIES = {"pants", "jeans", "pant", "bottom", "trousers"}
+FOLDER_CATEGORIES = {
+    "tshirts": "tshirt",
+    "tshirt": "tshirt",
+    "shirts": "tshirt",
+    "pants": "pants",
+    "jeans": "jeans",
+    "bottoms": "pants",
+    "trousers": "pants",
+}
 
 
 class GarmentApiClient:
@@ -24,7 +35,11 @@ class GarmentApiClient:
         self.local_dir = os.path.abspath(local_dir)
         self.timeout = timeout
         self.garments: List[dict] = []
+        self.upper_items: List[dict] = []
+        self.lower_items: List[dict] = []
         self.current_index = 0
+        self.upper_index = 0
+        self.lower_index = 0
         self.source = "none"
         self.cache_dir = tempfile.mkdtemp(prefix="vto_garments_")
         self._path_cache: Dict[str, str] = {}
@@ -43,7 +58,7 @@ class GarmentApiClient:
             if not garments:
                 raise ValueError("API returned an empty catalog")
             self.garments = self._merge_catalog(garments, local)
-            self.current_index = 0
+            self._rebuild_slots()
             self.source = "api+local" if local else "api"
             names = ", ".join(item.get("name", item.get("id", "?")) for item in self.garments)
             print(f"[INFO] Loaded {len(self.garments)} garment(s) from {self.source}: {names}")
@@ -53,7 +68,7 @@ class GarmentApiClient:
                 f"Falling back to local files in '{self.local_dir}'."
             )
             self.garments = local
-            self.current_index = 0
+            self._rebuild_slots()
             self.source = "local"
             if not self.garments:
                 print(f"[WARN] No local garments found in {self.local_dir}.")
@@ -66,9 +81,13 @@ class GarmentApiClient:
         if not os.path.isdir(self.local_dir):
             return garments
         for dirpath, _, filenames in os.walk(self.local_dir):
-            category = os.path.basename(dirpath).rstrip("s") or "tshirt"
-            if os.path.abspath(dirpath) == os.path.abspath(self.local_dir):
-                category = "tshirt"
+            folder = os.path.basename(dirpath)
+            category = FOLDER_CATEGORIES.get(folder.lower())
+            if category is None:
+                if os.path.abspath(dirpath) == os.path.abspath(self.local_dir):
+                    category = "tshirt"
+                else:
+                    category = folder.lower().rstrip("s") or "tshirt"
             for filename in sorted(filenames, key=str.lower):
                 if not filename.lower().endswith(VALID_EXTS):
                     continue
@@ -106,10 +125,31 @@ class GarmentApiClient:
             seen.add(filename.lower())
         return merged
 
+    def _rebuild_slots(self) -> None:
+        self.upper_items = [item for item in self.garments if self._is_upper(item)]
+        self.lower_items = [item for item in self.garments if self._is_lower(item)]
+        self.upper_index = 0
+        self.lower_index = 0
+        self.current_index = 0
+
+    @staticmethod
+    def _is_upper(item: dict) -> bool:
+        category = str(item.get("category") or "tshirt").lower()
+        name = str(item.get("name") or item.get("filename") or "").lower()
+        if category in LOWER_CATEGORIES or "jean" in name or "pant" in name:
+            return False
+        return category in UPPER_CATEGORIES or category not in LOWER_CATEGORIES
+
+    @staticmethod
+    def _is_lower(item: dict) -> bool:
+        category = str(item.get("category") or "").lower()
+        name = str(item.get("name") or item.get("filename") or "").lower()
+        return category in LOWER_CATEGORIES or "jean" in name or "pant" in name
+
     def get_current(self) -> Optional[dict]:
-        if not self.garments:
+        if not self.upper_items:
             return None
-        return self.garments[self.current_index]
+        return self.upper_items[self.upper_index]
 
     def get_current_name(self) -> str:
         current = self.get_current()
@@ -152,14 +192,29 @@ class GarmentApiClient:
         return self._cache_image(current)
 
     def next_garment(self) -> str:
-        if self.garments:
-            self.current_index = (self.current_index + 1) % len(self.garments)
+        if not self.upper_items:
+            return ""
+        self.upper_index = (self.upper_index + 1) % len(self.upper_items)
+        self.current_index = self.upper_index
         return self.get_current_image_path()
 
     def prev_garment(self) -> str:
-        if self.garments:
-            self.current_index = (self.current_index - 1) % len(self.garments)
+        if not self.upper_items:
+            return ""
+        self.upper_index = (self.upper_index - 1) % len(self.upper_items)
+        self.current_index = self.upper_index
         return self.get_current_image_path()
+
+    def get_current_lower(self) -> Optional[dict]:
+        if not self.lower_items:
+            return None
+        return self.lower_items[self.lower_index]
+
+    def get_current_lower_path(self) -> str:
+        current = self.get_current_lower()
+        if not current:
+            return ""
+        return self._cache_image(current)
 
     def _cache_image(self, garment: dict) -> str:
         garment_id = str(garment.get("id") or garment.get("name") or "garment")

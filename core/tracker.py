@@ -69,33 +69,76 @@ class PoseTracker:
         if left_shoulder is None or right_shoulder is None:
             return None
 
-        left_hip = _xy(landmarks[23]) if len(landmarks) > 24 else None
-        right_hip = _xy(landmarks[24]) if len(landmarks) > 24 else None
+        left_hip = _xy(landmarks[23], min_visibility=0.15) if len(landmarks) > 24 else None
+        right_hip = _xy(landmarks[24], min_visibility=0.15) if len(landmarks) > 24 else None
+        left_knee = _xy(landmarks[25], min_visibility=0.12) if len(landmarks) > 26 else None
+        right_knee = _xy(landmarks[26], min_visibility=0.12) if len(landmarks) > 26 else None
+        left_ankle = _xy(landmarks[27], min_visibility=0.10) if len(landmarks) > 28 else None
+        right_ankle = _xy(landmarks[28], min_visibility=0.10) if len(landmarks) > 28 else None
 
         shoulder_width = float(np.linalg.norm(left_shoulder - right_shoulder))
         center = (left_shoulder + right_shoulder) * 0.5
 
         torso_length = None
         hip_center = None
+        hip_width = None
         if left_hip is not None and right_hip is not None:
             hip_center = (left_hip + right_hip) * 0.5
+            hip_width = float(np.linalg.norm(left_hip - right_hip))
             torso_length = float(abs(hip_center[1] - center[1]))
+
+        left_leg_vector = None
+        right_leg_vector = None
+        if left_hip is not None and left_ankle is not None:
+            left_leg_vector = (float(left_ankle[0] - left_hip[0]), float(left_ankle[1] - left_hip[1]))
+        if right_hip is not None and right_ankle is not None:
+            right_leg_vector = (float(right_ankle[0] - right_hip[0]), float(right_ankle[1] - right_hip[1]))
+
+        leg_length = None
+        lengths = []
+        if left_leg_vector is not None:
+            lengths.append(math.hypot(*left_leg_vector))
+        if right_leg_vector is not None:
+            lengths.append(math.hypot(*right_leg_vector))
+        if lengths:
+            leg_length = float(sum(lengths) / len(lengths))
+
+        ankle_center = None
+        if left_ankle is not None and right_ankle is not None:
+            ankle_center = (
+                float((left_ankle[0] + right_ankle[0]) * 0.5),
+                float((left_ankle[1] + right_ankle[1]) * 0.5),
+            )
 
         angle_rad = math.atan2(
             right_shoulder[1] - left_shoulder[1],
             right_shoulder[0] - left_shoulder[0],
         )
 
+        def _pt(value):
+            if value is None:
+                return None
+            return (int(value[0]), int(value[1]))
+
         return {
-            "left_shoulder": (int(left_shoulder[0]), int(left_shoulder[1])),
-            "right_shoulder": (int(right_shoulder[0]), int(right_shoulder[1])),
-            "left_hip": None if left_hip is None else (int(left_hip[0]), int(left_hip[1])),
-            "right_hip": None if right_hip is None else (int(right_hip[0]), int(right_hip[1])),
+            "left_shoulder": _pt(left_shoulder),
+            "right_shoulder": _pt(right_shoulder),
+            "left_hip": _pt(left_hip),
+            "right_hip": _pt(right_hip),
+            "left_knee": _pt(left_knee),
+            "right_knee": _pt(right_knee),
+            "left_ankle": _pt(left_ankle),
+            "right_ankle": _pt(right_ankle),
             "shoulder_width": shoulder_width,
+            "hip_width": hip_width,
             "torso_length": torso_length,
-            "chest_center": (int(center[0]), int(center[1])),
+            "leg_length": leg_length,
+            "left_leg_vector": left_leg_vector,
+            "right_leg_vector": right_leg_vector,
+            "chest_center": _pt(center),
             "shoulder_center": (float(center[0]), float(center[1])),
             "hip_center": None if hip_center is None else (float(hip_center[0]), float(hip_center[1])),
+            "ankle_center": ankle_center,
             "angle_deg": math.degrees(angle_rad),
         }
 
