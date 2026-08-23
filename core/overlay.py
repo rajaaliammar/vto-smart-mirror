@@ -19,6 +19,7 @@ class GarmentOverlay:
         self.garment = None
         self.garment_path = None
         self._ema = {}
+        self._cache = {}
         if garment_path:
             self.load_garment(garment_path)
 
@@ -37,6 +38,17 @@ class GarmentOverlay:
             self.garment_path = None
             return False
 
+        if garment_path == self.garment_path and self.garment is not None:
+            return True
+
+        cached = self._cache.get(garment_path)
+        if cached is not None:
+            self.garment = cached
+            self.garment_path = garment_path
+            for key in ("width", "height"):
+                self._ema.pop(key, None)
+            return True
+
         image = self._read_bgra(garment_path)
         if image is None:
             print(f"[ERROR] Could not load garment image: {garment_path}")
@@ -47,6 +59,7 @@ class GarmentOverlay:
         image[hard == 0] = 0
         self.garment = self._crop_to_mask(image, hard)
         self.garment_path = garment_path
+        self._cache[garment_path] = self.garment
         for key in ("width", "height"):
             self._ema.pop(key, None)
         return True

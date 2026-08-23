@@ -8,12 +8,15 @@ SWIPE_RIGHT = "SWIPE_RIGHT"
 SWIPE_LEFT = "SWIPE_LEFT"
 
 INDEX_FINGER_TIP = 8
-HISTORY_LEN = 8
-MIN_SAMPLES = 5
-MIN_SWIPE_DISTANCE = 0.08
-COOLDOWN_SEC = 1.5
-PROCESS_EVERY_N = 4
-ROI_TOP_FRAC = 0.40
+HISTORY_LEN = 5
+MIN_SAMPLES = 3
+MIN_SWIPE_DISTANCE = 0.035
+COOLDOWN_SEC = 0.45
+PROCESS_EVERY_N = 1
+ROI_TOP_FRAC = 1.0
+POINTER_EMA_ALPHA = 0.62
+MISS_TOLERANCE = 3
+HANDS_INFER_MAX_WIDTH = 640
 
 
 class HandGestureDetector:
@@ -21,11 +24,12 @@ class HandGestureDetector:
 
     def __init__(
         self,
-        min_detection_confidence: float = 0.5,
-        min_tracking_confidence: float = 0.5,
+        min_detection_confidence: float = 0.4,
+        min_tracking_confidence: float = 0.4,
         min_swipe_distance: float = MIN_SWIPE_DISTANCE,
         cooldown_sec: float = COOLDOWN_SEC,
         process_every_n: int = PROCESS_EVERY_N,
+        pointer_ema_alpha: float = POINTER_EMA_ALPHA,
     ):
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
@@ -39,13 +43,17 @@ class HandGestureDetector:
         self.min_swipe_distance = min_swipe_distance
         self.cooldown_sec = cooldown_sec
         self.process_every_n = max(1, process_every_n)
+        self.pointer_ema_alpha = min(1.0, max(0.05, pointer_ema_alpha))
         self._frame_index = 0
         self._last_event_at = 0.0
+        self._misses = 0
+        self._ema_x = None
+        self._ema_y = None
         self.last_event = None
         self.last_fingertip = None
 
     def process_frame(self, frame_bgr):
-        """Return a new swipe event or None. Hands run only every Nth frame."""
+        """Return a new swipe event or None. Pointer is EMA-smoothed every hit."""
         if frame_bgr is None:
             return None
 
@@ -56,25 +64,23 @@ class HandGestureDetector:
         frame_h, frame_w = frame_bgr.shape[:2]
         roi_h = max(1, int(frame_h * ROI_TOP_FRAC))
         roi = frame_bgr[:roi_h, :]
+        infer = self._prepare_infer_image(roi)
 
-        rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+        rgb = cv2.cvtColor(infer, cv2.COLOR_BGR2RGB)
         rgb.flags.writeable = False
         result = self.hands.process(rgb)
 
         if not result.multi_hand_landmarks:
-            self.history.clear()
-            self.last_fingertip = None
-            return None
+            return self._on_miss()
 
         tip = result.multi_hand_landmarks[0].landmark[INDEX_FINGER_TIP]
-        px = int(tip.x * frame_w)
-        py = int(tip.y * roi_h)
+        px = float(tip.x) * frame_w
+        py = float(tip.y) * roi_h
         if py < 0 or py > roi_h:
-            self.history.clear()
-            self.last_fingertip = None
-            return None
+            return self._on_miss()
 
-        self.last_fingertip = (px, py)
+        self._misses = 0
+        self.last_fingertip = self._smooth_pointer(px, py)
         self.history.append(float(tip.x))
         event = self._detect_swipe()
         if event:
@@ -87,6 +93,36 @@ class HandGestureDetector:
         cv2.circle(frame, self.last_fingertip, 9, (0, 255, 0), -1, cv2.LINE_AA)
         cv2.circle(frame, self.last_fingertip, 12, (0, 200, 0), 2, cv2.LINE_AA)
         return frame
+
+    @staticmethod
+    def _prepare_infer_image(roi):
+        width = roi.shape[1]
+        if width <= HANDS_INFER_MAX_WIDTH:
+            return roi
+        scale = HANDS_INFER_MAX_WIDTH / float(width)
+        return cv2.resize(
+            roi,
+            (HANDS_INFER_MAX_WIDTH, max(1, int(roi.shape[0] * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    def _smooth_pointer(self, x: float, y: float):
+        alpha = self.pointer_ema_alpha
+        if self._ema_x is None or self._ema_y is None:
+            self._ema_x, self._ema_y = x, y
+        else:
+            self._ema_x = alpha * x + (1.0 - alpha) * self._ema_x
+            self._ema_y = alpha * y + (1.0 - alpha) * self._ema_y
+        return (int(round(self._ema_x)), int(round(self._ema_y)))
+
+    def _on_miss(self):
+        self._misses += 1
+        if self._misses > MISS_TOLERANCE:
+            self.history.clear()
+            self.last_fingertip = None
+            self._ema_x = None
+            self._ema_y = None
+        return None
 
     def _detect_swipe(self):
         if len(self.history) < MIN_SAMPLES:
@@ -103,7 +139,7 @@ class HandGestureDetector:
         for x in list(self.history)[1:]:
             step_sum += x - prev
             prev = x
-        if abs(step_sum) < abs(delta_x) * 0.7:
+        if abs(step_sum) < abs(delta_x) * 0.5:
             return None
 
         event = None

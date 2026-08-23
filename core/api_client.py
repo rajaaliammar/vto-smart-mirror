@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 import requests
 
 API_BASE_URL = "http://127.0.0.1:8000/api/v1"
-LOCAL_GARMENTS_DIR = os.path.join("assets", "sample_clothes", "tshirts")
+LOCAL_GARMENTS_DIR = os.path.join("assets", "sample_clothes")
 VALID_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 
@@ -31,6 +31,7 @@ class GarmentApiClient:
         self.refresh()
 
     def refresh(self) -> None:
+        local = self._scan_local_garments()
         try:
             response = requests.get(
                 f"{self.base_url}/garments",
@@ -41,42 +42,69 @@ class GarmentApiClient:
             garments = payload.get("garments") or []
             if not garments:
                 raise ValueError("API returned an empty catalog")
-            self.garments = garments
+            self.garments = self._merge_catalog(garments, local)
             self.current_index = 0
-            self.source = "api"
-            names = ", ".join(item.get("name", item.get("id", "?")) for item in garments)
-            print(f"[INFO] Loaded {len(garments)} garment(s) from API: {names}")
+            self.source = "api+local" if local else "api"
+            names = ", ".join(item.get("name", item.get("id", "?")) for item in self.garments)
+            print(f"[INFO] Loaded {len(self.garments)} garment(s) from {self.source}: {names}")
         except (requests.RequestException, ValueError, KeyError) as exc:
             print(
                 f"[WARN] API server unreachable at {self.base_url} ({exc}). "
                 f"Falling back to local files in '{self.local_dir}'."
             )
-            self._load_local_fallback()
+            self.garments = local
+            self.current_index = 0
+            self.source = "local"
+            if not self.garments:
+                print(f"[WARN] No local garments found in {self.local_dir}.")
+            else:
+                names = ", ".join(item["name"] for item in self.garments)
+                print(f"[INFO] Loaded {len(self.garments)} local garment(s): {names}")
 
-    def _load_local_fallback(self) -> None:
-        self.garments = []
-        self.source = "local"
-        if os.path.isdir(self.local_dir):
-            for filename in sorted(os.listdir(self.local_dir)):
+    def _scan_local_garments(self) -> List[dict]:
+        garments = []
+        if not os.path.isdir(self.local_dir):
+            return garments
+        for dirpath, _, filenames in os.walk(self.local_dir):
+            category = os.path.basename(dirpath).rstrip("s") or "tshirt"
+            if os.path.abspath(dirpath) == os.path.abspath(self.local_dir):
+                category = "tshirt"
+            for filename in sorted(filenames, key=str.lower):
                 if not filename.lower().endswith(VALID_EXTS):
                     continue
                 stem = os.path.splitext(filename)[0]
-                path = os.path.abspath(os.path.join(self.local_dir, filename))
-                self.garments.append(
+                path = os.path.abspath(os.path.join(dirpath, filename))
+                garments.append(
                     {
                         "id": stem.lower().replace(" ", "-"),
                         "name": stem.replace("_", " ").replace("-", " ").title(),
-                        "category": "tshirt",
+                        "category": category,
                         "image_url": path,
+                        "filename": filename.lower(),
                         "available_sizes": ["S", "M", "L", "XL"],
                         "default_scale": 1.55,
                     }
                 )
-        if not self.garments:
-            print(f"[WARN] No local garments found in {self.local_dir}.")
-        else:
-            names = ", ".join(item["name"] for item in self.garments)
-            print(f"[INFO] Loaded {len(self.garments)} local garment(s): {names}")
+        garments.sort(key=lambda item: str(item.get("name", "")).lower())
+        return garments
+
+    @staticmethod
+    def _merge_catalog(api_garments: List[dict], local_garments: List[dict]) -> List[dict]:
+        merged = list(api_garments)
+        seen = set()
+        for item in merged:
+            seen.add(str(item.get("id", "")).lower())
+            url = str(item.get("image_url") or "")
+            seen.add(os.path.basename(urlparse(url).path).lower())
+        for item in local_garments:
+            filename = str(item.get("filename") or os.path.basename(item.get("image_url", "")))
+            garment_id = str(item.get("id", "")).lower()
+            if garment_id in seen or filename.lower() in seen:
+                continue
+            merged.append(item)
+            seen.add(garment_id)
+            seen.add(filename.lower())
+        return merged
 
     def get_current(self) -> Optional[dict]:
         if not self.garments:

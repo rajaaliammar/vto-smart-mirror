@@ -16,7 +16,7 @@ from core.visualization import UIOverlay
 STATE_LIVE = "LIVE"
 STATE_SHOW_SNAPSHOT = "SHOW_SNAPSHOT"
 
-GESTURE_BANNER_SEC = 1.0
+GESTURE_BANNER_SEC = 0.85
 POSE_HOLD_FRAMES = 2
 CHEESE_HOLD_SEC = 0.45
 SNAPSHOT_HOLD_SEC = 6.0
@@ -30,6 +30,16 @@ def _load_current(overlay, catalog) -> bool:
     return False
 
 
+def _switch_garment(overlay, catalog, direction: str, banner: str):
+    if direction == "next":
+        catalog.next_garment()
+    else:
+        catalog.prev_garment()
+    if not _load_current(overlay, catalog):
+        return ""
+    return banner
+
+
 def _draw_mirror_hud(hud, frame, catalog, live: bool):
     return hud.draw(
         frame,
@@ -39,6 +49,23 @@ def _draw_mirror_hud(hud, frame, catalog, live: bool):
         catalog.get_current_price_label(),
         live=live,
     )
+
+
+def _preload_catalog(overlay, catalog):
+    saved = catalog.current_index
+    for index in range(len(catalog.garments)):
+        catalog.current_index = index
+        path = catalog.get_current_image_path()
+        if path:
+            overlay.load_garment(path)
+    catalog.current_index = saved
+    path = catalog.get_current_image_path()
+    if path:
+        overlay.load_garment(path)
+        print(
+            f"[INFO] Active garment: {catalog.get_current_name()} "
+            f"({len(catalog.garments)} in catalog)"
+        )
 
 
 def _countdown_label(elapsed: float):
@@ -55,7 +82,7 @@ def _countdown_label(elapsed: float):
 
 def main():
     print("==========================================")
-    print(" VTO SMART MIRROR - PHASE 5 (PRODUCTION)")
+    print(" VTO SMART MIRROR - PHASE 6 (GESTURE + SWITCH)")
     print("==========================================")
     print(" Controls:")
     print("  'N' / Swipe Right -> Next Garment")
@@ -68,21 +95,18 @@ def main():
     cam = CameraStream(device_index=0, width=1280, height=720)
     tracker = PoseTracker()
     gestures = HandGestureDetector(
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-        min_swipe_distance=0.08,
-        cooldown_sec=1.5,
-        process_every_n=4,
+        min_detection_confidence=0.4,
+        min_tracking_confidence=0.4,
+        min_swipe_distance=0.035,
+        cooldown_sec=0.45,
+        process_every_n=1,
     )
     hud = MirrorHUD()
     ui = UIOverlay()
     catalog = GarmentApiClient()
 
     overlay = GarmentOverlay()
-    current_path = catalog.get_current_image_path()
-    if current_path:
-        overlay.load_garment(current_path)
-        print(f"[INFO] Active garment: {catalog.get_current_name()}")
+    _preload_catalog(overlay, catalog)
 
     gesture_banner = ""
     gesture_banner_until = 0.0
@@ -165,23 +189,27 @@ def main():
             else:
                 display_body = None
 
+        swipe = gestures.process_frame(frame)
+        if swipe == SWIPE_RIGHT:
+            banner = _switch_garment(
+                overlay, catalog, "next", "Gesture: NEXT ->"
+            )
+            if banner:
+                gesture_banner = banner
+                gesture_banner_until = time.time() + GESTURE_BANNER_SEC
+        elif swipe == SWIPE_LEFT:
+            banner = _switch_garment(
+                overlay, catalog, "prev", "Gesture: PREV <-"
+            )
+            if banner:
+                gesture_banner = banner
+                gesture_banner_until = time.time() + GESTURE_BANNER_SEC
+
         frame = overlay.apply_overlay(frame, display_body)
         composite = frame.copy()
 
-        swipe = gestures.process_frame(frame)
-        if swipe == SWIPE_RIGHT:
-            catalog.next_garment()
-            if _load_current(overlay, catalog):
-                gesture_banner = "Gesture: NEXT ->"
-                gesture_banner_until = time.time() + GESTURE_BANNER_SEC
-        elif swipe == SWIPE_LEFT:
-            catalog.prev_garment()
-            if _load_current(overlay, catalog):
-                gesture_banner = "Gesture: PREV <-"
-                gesture_banner_until = time.time() + GESTURE_BANNER_SEC
-
-        frame = gestures.draw_fingertip(frame)
         frame = _draw_mirror_hud(hud, frame, catalog, live=True)
+        frame = hud.draw_hand_cursor(frame, gestures.last_fingertip)
         if time.time() < gesture_banner_until:
             frame = ui.draw_gesture(frame, gesture_banner)
 
@@ -207,11 +235,19 @@ def main():
         if key == ord("q") or key == ord("Q"):
             break
         elif key == ord("n") or key == ord("N"):
-            catalog.next_garment()
-            _load_current(overlay, catalog)
+            banner = _switch_garment(
+                overlay, catalog, "next", "Key: NEXT ->"
+            )
+            if banner:
+                gesture_banner = banner
+                gesture_banner_until = time.time() + GESTURE_BANNER_SEC
         elif key == ord("p") or key == ord("P"):
-            catalog.prev_garment()
-            _load_current(overlay, catalog)
+            banner = _switch_garment(
+                overlay, catalog, "prev", "Key: PREV <-"
+            )
+            if banner:
+                gesture_banner = banner
+                gesture_banner_until = time.time() + GESTURE_BANNER_SEC
         elif key == ord("s") or key == ord("S"):
             if countdown_started_at is None and state == STATE_LIVE:
                 countdown_started_at = time.time()

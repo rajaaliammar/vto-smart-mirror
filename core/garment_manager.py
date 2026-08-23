@@ -1,25 +1,25 @@
 import os
 
+VALID_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+
 
 class GarmentManager:
 
-    def __init__(self, tshirts_dir: str = "assets/sample_clothes/tshirts"):
+    def __init__(self, tshirts_dir: str = "assets/sample_clothes"):
         self.tshirts_dir = os.path.abspath(tshirts_dir)
         self.garments = []
         self.current_index = 0
         self.load_garments()
 
     def load_garments(self):
-        """Scan directory for PNG/JPEG garments and store absolute paths."""
+        """Recursively scan sample_clothes for PNG/JPEG garments."""
         self.garments = []
         if os.path.isdir(self.tshirts_dir):
-            valid_exts = (".png", ".jpg", ".jpeg")
-            found = [
-                os.path.abspath(os.path.join(self.tshirts_dir, filename))
-                for filename in os.listdir(self.tshirts_dir)
-                if filename.lower().endswith(valid_exts)
-            ]
-            # Stable N/P order (tshirt1, tshirt2, ...)
+            found = []
+            for dirpath, _, filenames in os.walk(self.tshirts_dir):
+                for filename in filenames:
+                    if filename.lower().endswith(VALID_EXTS):
+                        found.append(os.path.abspath(os.path.join(dirpath, filename)))
             self.garments = sorted(found, key=lambda path: os.path.basename(path).lower())
 
         if not self.garments:

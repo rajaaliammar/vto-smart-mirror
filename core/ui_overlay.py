@@ -3,6 +3,10 @@ import time
 import cv2
 import numpy as np
 
+CURSOR_CORE = (80, 255, 140)
+CURSOR_RING = (0, 230, 255)
+CURSOR_GLOW = (0, 160, 255)
+
 
 class MirrorHUD:
     """Retail top bar: garment metadata, live FPS pill, and swipe guides."""
@@ -81,6 +85,26 @@ class MirrorHUD:
 
         self._draw_live_pill(frame, w, fps, live=live)
         self._draw_swipe_guides(frame, w)
+        return frame
+
+    @staticmethod
+    def draw_hand_cursor(frame, point):
+        """Sleek ring cursor that tracks the EMA-smoothed fingertip."""
+        if frame is None or point is None:
+            return frame
+        x, y = int(point[0]), int(point[1])
+        h, w = frame.shape[:2]
+        if x < 0 or y < 0 or x >= w or y >= h:
+            return frame
+
+        overlay = frame.copy()
+        cv2.circle(overlay, (x, y), 28, CURSOR_GLOW, 2, cv2.LINE_AA)
+        cv2.circle(overlay, (x, y), 18, CURSOR_RING, 2, cv2.LINE_AA)
+        cv2.circle(overlay, (x, y), 7, CURSOR_CORE, -1, cv2.LINE_AA)
+        cv2.circle(overlay, (x, y), 7, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.82, frame, 0.18, 0, dst=frame)
+        cv2.circle(frame, (x, y), 22, CURSOR_RING, 2, cv2.LINE_AA)
+        cv2.circle(frame, (x, y), 5, CURSOR_CORE, -1, cv2.LINE_AA)
         return frame
 
     @staticmethod
