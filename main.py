@@ -6,6 +6,7 @@ import cv2
 from core.api_client import GarmentApiClient
 from core.camera import CameraStream
 from core.gesture_detector import SWIPE_LEFT, SWIPE_RIGHT, HandGestureDetector
+from core.garment_overlay import COLOR_VARIANTS
 from core.overlay import GarmentOverlay
 from core.qr_generator import capture_download_url, generate_qr_image, overlay_qr_code
 from core.snapshot import save_snapshot_async
@@ -40,7 +41,9 @@ def _switch_garment(overlay, catalog, direction: str, banner: str):
     return banner
 
 
-def _draw_mirror_hud(hud, frame, catalog, live: bool):
+def _draw_mirror_hud(hud, frame, catalog, live: bool, overlay=None):
+    color = overlay.current_color() if overlay is not None else None
+    index = overlay.color_index if overlay is not None else 0
     return hud.draw(
         frame,
         catalog.get_current_name(),
@@ -48,6 +51,9 @@ def _draw_mirror_hud(hud, frame, catalog, live: bool):
         catalog.get_current_size(),
         catalog.get_current_price_label(),
         live=live,
+        color_variant=color,
+        color_variants=COLOR_VARIANTS,
+        color_index=index,
     )
 
 
@@ -82,11 +88,12 @@ def _countdown_label(elapsed: float):
 
 def main():
     print("==========================================")
-    print(" VTO SMART MIRROR - PHASE 6 (GESTURE + SWITCH)")
+    print(" VTO SMART MIRROR - PHASE 7 (LIGHTING + TINT)")
     print("==========================================")
     print(" Controls:")
     print("  'N' / Swipe Right -> Next Garment")
     print("  'P' / Swipe Left  -> Previous Garment")
+    print("  'C' -> Cycle Color (Original / Crimson / Royal / Emerald / Charcoal)")
     print("  'S' -> Snapshot + QR (3-2-1 CHEESE!)")
     print("  'Q' -> Exit Application")
     print("==========================================")
@@ -148,7 +155,7 @@ def main():
                 cv2.LINE_AA,
             )
             display = overlay_qr_code(display, qr_image)
-            display = _draw_mirror_hud(hud, display, catalog, live=False)
+            display = _draw_mirror_hud(hud, display, catalog, live=False, overlay=overlay)
             cv2.imshow("VTO Smart Mirror - Virtual Try-On", display)
             if now >= snapshot_until:
                 state = STATE_LIVE
@@ -208,7 +215,7 @@ def main():
         frame = overlay.apply_overlay(frame, display_body)
         composite = frame.copy()
 
-        frame = _draw_mirror_hud(hud, frame, catalog, live=True)
+        frame = _draw_mirror_hud(hud, frame, catalog, live=True, overlay=overlay)
         frame = hud.draw_hand_cursor(frame, gestures.last_fingertip)
         if time.time() < gesture_banner_until:
             frame = ui.draw_gesture(frame, gesture_banner)
@@ -248,6 +255,9 @@ def main():
             if banner:
                 gesture_banner = banner
                 gesture_banner_until = time.time() + GESTURE_BANNER_SEC
+        elif key == ord("c") or key == ord("C"):
+            variant = overlay.cycle_color()
+            print(f"[INFO] Color: {variant['label']}")
         elif key == ord("s") or key == ord("S"):
             if countdown_started_at is None and state == STATE_LIVE:
                 countdown_started_at = time.time()

@@ -34,6 +34,9 @@ class MirrorHUD:
         size: str = "M",
         price: str = "$49.99 / PKR 3,500",
         live: bool = True,
+        color_variant=None,
+        color_variants=None,
+        color_index: int = 0,
     ):
         if frame is None:
             return frame
@@ -82,6 +85,15 @@ class MirrorHUD:
             1,
             cv2.LINE_AA,
         )
+        (price_w, _), _ = cv2.getTextSize(price_label, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
+        self._draw_color_swatches(
+            frame,
+            badge_x + 14 + price_w + 16,
+            50,
+            color_variant,
+            color_variants,
+            color_index,
+        )
 
         self._draw_live_pill(frame, w, fps, live=live)
         self._draw_swipe_guides(frame, w)
@@ -128,6 +140,37 @@ class MirrorHUD:
             cv2.LINE_AA,
         )
         return x2
+
+    @staticmethod
+    def _draw_color_swatches(frame, x, y, color_variant, color_variants, color_index: int):
+        variants = list(color_variants or ())
+        if not variants:
+            return
+        size, gap = 16, 5
+        active = int(color_index) if color_variants else 0
+        if color_variant:
+            for i, item in enumerate(variants):
+                if item.get("key") == color_variant.get("key"):
+                    active = i
+                    break
+        for i, item in enumerate(variants):
+            sx = int(x + i * (size + gap))
+            color = tuple(int(c) for c in item.get("swatch_bgr", (180, 180, 180)))
+            cv2.rectangle(frame, (sx, y), (sx + size, y + size), color, -1)
+            border = (255, 255, 255) if i == active else (90, 90, 90)
+            cv2.rectangle(frame, (sx, y), (sx + size, y + size), border, 2 if i == active else 1)
+        label = (color_variant or variants[active]).get("label", "Original")
+        text_x = int(x + len(variants) * (size + gap) + 6)
+        cv2.putText(
+            frame,
+            str(label),
+            (text_x, y + size - 2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (230, 230, 230),
+            1,
+            cv2.LINE_AA,
+        )
 
     @staticmethod
     def _draw_live_pill(frame, frame_w: int, fps: int, live: bool = True):

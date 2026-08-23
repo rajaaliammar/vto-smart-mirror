@@ -3,14 +3,20 @@ import numpy as np
 import os
 
 from core.garment_overlay import (
+    AMBIENT_REF_V,
+    COLOR_VARIANTS,
     COLLAR_LIFT,
+    adapt_garment_lighting,
+    apply_palette_color,
     blend_garment_roi,
     compute_garment_size,
+    estimate_torso_ambient,
     feather_alpha_channel,
 )
 
 # Smooth pose jitter (hands entering the frame, brief dropouts).
 EMA_ALPHA = 0.3
+AMBIENT_EMA = 0.18
 
 
 class GarmentOverlay:
@@ -20,8 +26,37 @@ class GarmentOverlay:
         self.garment_path = None
         self._ema = {}
         self._cache = {}
+        self._tint_cache = {}
+        self.color_index = 0
+        self._ambient_v = AMBIENT_REF_V
         if garment_path:
             self.load_garment(garment_path)
+
+    def cycle_color(self):
+        self.color_index = (self.color_index + 1) % len(COLOR_VARIANTS)
+        return self.current_color()
+
+    def current_color(self):
+        return COLOR_VARIANTS[self.color_index]
+
+    def _tinted_source(self):
+        if self.garment is None:
+            return None
+        variant = self.current_color()
+        key = (self.garment_path, variant["key"])
+        cached = self._tint_cache.get(key)
+        if cached is not None:
+            return cached
+        tinted = apply_palette_color(self.garment, variant)
+        self._tint_cache[key] = tinted
+        return tinted
+
+    def _update_ambient(self, frame, body_data) -> float:
+        sample = estimate_torso_ambient(frame, body_data)
+        if sample is None:
+            return self._ambient_v
+        self._ambient_v = AMBIENT_EMA * sample + (1.0 - AMBIENT_EMA) * self._ambient_v
+        return self._ambient_v
 
     def _smooth(self, key: str, value: float) -> float:
         prev = self._ema.get(key)
@@ -274,12 +309,17 @@ class GarmentOverlay:
         ry = self._smooth("ry", ry)
         shoulder_pixel_dist = abs(rx - lx)
 
+        source = self._tinted_source()
+        if source is None:
+            return frame
+
+        ambient_v = self._update_ambient(frame, body_data)
         torso_length = self._torso_length(body_data, frame_w, frame_h, (lx + rx) * 0.5, (ly + ry) * 0.5)
         target_width, target_height = compute_garment_size(
             shoulder_pixel_dist,
             torso_length,
-            self.garment.shape[0],
-            self.garment.shape[1],
+            source.shape[0],
+            source.shape[1],
             frame_w,
             frame_h,
         )
@@ -289,10 +329,11 @@ class GarmentOverlay:
             return frame
 
         resized = cv2.resize(
-            self.garment,
+            source,
             (target_width, target_height),
             interpolation=cv2.INTER_AREA,
         )
+        resized = adapt_garment_lighting(resized, ambient_v)
         if resized.shape[2] >= 4:
             resized[:, :, 3] = feather_alpha_channel(resized[:, :, 3])
         garment_h, garment_w = resized.shape[:2]
