@@ -10,6 +10,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = BACKEND_ROOT / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 (STATIC_DIR / "garments").mkdir(parents=True, exist_ok=True)
+(STATIC_DIR / "captures").mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(
     title="VTO Smart Mirror API",

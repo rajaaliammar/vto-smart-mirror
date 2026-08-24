@@ -32,6 +32,9 @@ logs/
 
 # Local ML model downloads
 *.task
+openh264*.dll
 
 # Snapshot captures
 captures/
+backend/static/captures/*
+!backend/static/captures/.gitkeep

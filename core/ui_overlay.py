@@ -40,11 +40,12 @@ def recommend_size(body_data, frame_shape=None):
 
 
 class MirrorHUD:
-    """Retail top bar: garment metadata, live FPS pill, and swipe guides."""
+    """Retail top bar: garment metadata, FPS + inference latency, REC badge, swipe guides."""
 
     def __init__(self):
         self._prev_time = time.perf_counter()
         self.fps = 0.0
+        self.latency_ms = 0.0
         self._fit_votes = []
         self._stable_size = "M"
         self._smooth_score = 90.0
@@ -60,6 +61,16 @@ class MirrorHUD:
             self.fps = 0.85 * self.fps + 0.15 * inst
         return int(self.fps)
 
+    def update_latency(self, latency_ms) -> int:
+        if latency_ms is None:
+            return int(round(self.latency_ms))
+        sample = max(0.0, float(latency_ms))
+        if self.latency_ms <= 0:
+            self.latency_ms = sample
+        else:
+            self.latency_ms = 0.85 * self.latency_ms + 0.15 * sample
+        return int(round(self.latency_ms))
+
     def draw(
         self,
         frame,
@@ -73,11 +84,16 @@ class MirrorHUD:
         color_index: int = 0,
         fit_advice=None,
         outfit_mode: str = "upper",
+        latency_ms=None,
+        recording: bool = False,
+        rec_elapsed: float = 0.0,
+        video_saved: bool = False,
     ):
         if frame is None:
             return frame
 
         fps = self.update_fps()
+        latency = self.update_latency(latency_ms)
         _, w = frame.shape[:2]
         bar_h = 92
         overlay = frame.copy()
@@ -131,10 +147,14 @@ class MirrorHUD:
             color_index,
         )
 
-        self._draw_live_pill(frame, w, fps, live=live)
+        pill_x1 = self._draw_live_pill(frame, w, fps, live=live, latency_ms=latency)
+        if recording:
+            self._draw_rec_indicator(frame, pill_x1, rec_elapsed)
         self._draw_swipe_guides(frame, w)
         self._draw_fit_advisor(frame, fit_advice, outfit_mode, bar_h)
-        return frame
+        if video_saved:
+            self.draw_video_saved_toast(frame)
+        return np.ascontiguousarray(frame)
 
     @staticmethod
     def draw_hand_cursor(frame, point):
@@ -268,13 +288,87 @@ class MirrorHUD:
         )
 
     @staticmethod
-    def _draw_live_pill(frame, frame_w: int, fps: int, live: bool = True):
+    def draw_video_saved_toast(frame, message: str = "VIDEO SAVED!"):
+        """Centered 2-second confirmation after recording stops."""
+        if frame is None:
+            return frame
+        h, w = frame.shape[:2]
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale, thickness = 1.15, 3
+        (tw, th), _ = cv2.getTextSize(message, font, scale, thickness)
+        pad_x, pad_y = 28, 18
+        box_w = tw + pad_x * 2
+        box_h = th + pad_y * 2
+        x1 = (w - box_w) // 2
+        y1 = max(108, (h // 2) - 40)
+        x2, y2 = x1 + box_w, y1 + box_h
+
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), (32, 140, 46), -1)
+        cv2.addWeighted(overlay, 0.88, frame, 0.12, 0, dst=frame)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (90, 230, 120), 2)
+        cv2.putText(
+            frame,
+            message,
+            (x1 + pad_x, y1 + pad_y + th - 2),
+            font,
+            scale,
+            (255, 255, 255),
+            thickness,
+            cv2.LINE_AA,
+        )
+        return frame
+
+    @staticmethod
+    def _draw_rec_indicator(frame, right_x: int, elapsed_sec: float):
+        """Blinking red ● REC MM:SS badge on the top-right HUD."""
+        minutes = int(elapsed_sec) // 60
+        seconds = int(elapsed_sec) % 60
+        text = f"REC {minutes:02d}:{seconds:02d}"
+        blink_on = int(time.time() * 2) % 2 == 0
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale, thickness = 0.50, 2
+        (tw, th), _ = cv2.getTextSize(text, font, scale, thickness)
+        pad_x, pad_y = 16, 9
+        pill_w = tw + pad_x * 2 + 18
+        pill_h = th + pad_y * 2
+        x2 = max(18, int(right_x) - 10)
+        x1 = x2 - pill_w
+        y1, y2 = 12, 12 + pill_h
+        cy = (y1 + y2) // 2
+        fill = (28, 28, 120)
+
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x1 + pill_h // 2, y1), (x2 - pill_h // 2, y2), fill, -1)
+        cv2.circle(overlay, (x1 + pill_h // 2, cy), pill_h // 2, fill, -1)
+        cv2.circle(overlay, (x2 - pill_h // 2, cy), pill_h // 2, fill, -1)
+        cv2.addWeighted(overlay, 0.88, frame, 0.12, 0, dst=frame)
+
+        dot = (0, 0, 255) if blink_on else (40, 40, 90)
+        cv2.circle(frame, (x1 + 16, cy), 6, dot, -1)
+        if blink_on:
+            cv2.circle(frame, (x1 + 16, cy), 6, (220, 220, 255), 1, cv2.LINE_AA)
+        cv2.putText(
+            frame,
+            text,
+            (x1 + 30, cy + th // 2 - 1),
+            font,
+            scale,
+            (245, 245, 245),
+            thickness,
+            cv2.LINE_AA,
+        )
+
+    @staticmethod
+    def _draw_live_pill(frame, frame_w: int, fps: int, live: bool = True, latency_ms: int = 0):
+        latency = max(0, int(latency_ms))
         if live:
-            text = f"LIVE TRY-ON | {fps} FPS"
+            text = f"LIVE TRY-ON | {fps} FPS | {latency}ms"
             fill = (32, 96, 36)
             accent = (70, 230, 90)
         else:
-            text = f"SNAPSHOT | {fps} FPS"
+            text = f"SNAPSHOT | {fps} FPS | {latency}ms"
             fill = (36, 72, 110)
             accent = (0, 200, 255)
 
@@ -307,6 +401,7 @@ class MirrorHUD:
             thickness,
             cv2.LINE_AA,
         )
+        return x1
 
     @staticmethod
     def _draw_swipe_guides(frame, frame_w: int):

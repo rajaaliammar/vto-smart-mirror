@@ -9,7 +9,7 @@ from core.gesture_detector import SWIPE_LEFT, SWIPE_RIGHT, HandGestureDetector
 from core.garment_overlay import COLOR_VARIANTS
 from core.overlay import GarmentOverlay
 from core.qr_generator import capture_download_url, generate_qr_image, overlay_qr_code
-from core.snapshot import save_snapshot_async
+from core.snapshot import MirrorVideoRecorder, save_snapshot_async
 from core.tracker import PoseTracker
 from core.ui_overlay import MirrorHUD, recommend_size
 from core.visualization import UIOverlay
@@ -21,6 +21,9 @@ GESTURE_BANNER_SEC = 0.85
 POSE_HOLD_FRAMES = 2
 CHEESE_HOLD_SEC = 0.45
 SNAPSHOT_HOLD_SEC = 6.0
+VIDEO_SAVED_SEC = 2.0
+R_TOGGLE_DEBOUNCE_SEC = 0.40
+CAMERA_RECORD_FPS = 20.0
 
 
 def _load_current(overlay, catalog) -> bool:
@@ -41,10 +44,22 @@ def _switch_garment(overlay, catalog, direction: str, banner: str):
     return banner
 
 
-def _draw_mirror_hud(hud, frame, catalog, live: bool, overlay=None, fit_advice=None):
+def _draw_mirror_hud(
+    hud,
+    frame,
+    catalog,
+    live: bool,
+    overlay=None,
+    fit_advice=None,
+    latency_ms=None,
+    recorder=None,
+    video_saved: bool = False,
+):
     color = overlay.current_color() if overlay is not None else None
     index = overlay.color_index if overlay is not None else 0
     outfit_mode = overlay.outfit_mode if overlay is not None else "upper"
+    recording = bool(recorder and recorder.is_recording)
+    rec_elapsed = recorder.elapsed() if recording else 0.0
     return hud.draw(
         frame,
         catalog.get_current_name(),
@@ -57,7 +72,38 @@ def _draw_mirror_hud(hud, frame, catalog, live: bool, overlay=None, fit_advice=N
         color_index=index,
         fit_advice=fit_advice,
         outfit_mode=outfit_mode,
+        latency_ms=latency_ms,
+        recording=recording,
+        rec_elapsed=rec_elapsed,
+        video_saved=video_saved,
     )
+
+
+def _write_recording(recorder, frame) -> None:
+    """Write a clean BGR copy while recording. OpenCV VideoWriter expects BGR."""
+    if frame is not None and recorder.is_recording:
+        recorder.write(frame.copy())
+
+
+def _toggle_recording(recorder, frame, key_state):
+    """Debounced 'R' toggle. Returns a relative path when a file is saved."""
+    now = time.time()
+    if now - key_state.get("last_r", 0.0) < R_TOGGLE_DEBOUNCE_SEC:
+        return None
+    key_state["last_r"] = now
+    if recorder.is_recording:
+        return recorder.stop()
+    recorder.start(frame, fps=CAMERA_RECORD_FPS)
+    return None
+
+
+def _handle_key(key, recorder, frame, key_state):
+    """Return (should_quit, saved_video_path_or_None)."""
+    if key == ord("q") or key == ord("Q"):
+        return True, None
+    if key == ord("r") or key == ord("R"):
+        return False, _toggle_recording(recorder, frame, key_state)
+    return False, None
 
 
 def _preload_catalog(overlay, catalog):
@@ -95,7 +141,7 @@ def _countdown_label(elapsed: float):
 
 def main():
     print("==========================================")
-    print(" VTO SMART MIRROR - PHASE 8 (OUTFIT + AI FIT)")
+    print(" VTO SMART MIRROR - PHASE 9 (RECORD + BENCHMARKS)")
     print("==========================================")
     print(" Controls:")
     print("  'N' / Swipe Right -> Next Shirt")
@@ -103,9 +149,11 @@ def main():
     print("  'O' -> Toggle Outfit (Upper Only / Full Outfit)")
     print("  'C' -> Cycle Color (Original / Crimson / Royal / Emerald / Charcoal)")
     print("  'S' -> Snapshot + QR (3-2-1 CHEESE!)")
+    print("  'R' -> Start / Stop MP4 recording")
     print("  'Q' -> Exit Application")
     print("==========================================")
     print("[INFO] Keep the FastAPI server on :8000 so phones can download captures.")
+    print("[INFO] Recordings save to captures/videos/ as H.264 .mp4")
 
     cam = CameraStream(device_index=0, width=1280, height=720)
     tracker = PoseTracker()
@@ -122,6 +170,7 @@ def main():
 
     overlay = GarmentOverlay()
     overlay.outfit_mode = "upper"
+    recorder = MirrorVideoRecorder(fps=CAMERA_RECORD_FPS)
     _preload_catalog(overlay, catalog)
     print("[INFO] Mode: UPPER ONLY (press O for optional full outfit)")
 
@@ -137,6 +186,9 @@ def main():
     frozen_frame = None
     qr_image = None
     snapshot_until = 0.0
+    last_latency_ms = 0.0
+    video_saved_until = 0.0
+    key_state = {"last_r": 0.0}
 
     while True:
         now = time.time()
@@ -165,7 +217,17 @@ def main():
                 cv2.LINE_AA,
             )
             display = overlay_qr_code(display, qr_image)
-            display = _draw_mirror_hud(hud, display, catalog, live=False, overlay=overlay)
+            display = _draw_mirror_hud(
+                hud,
+                display,
+                catalog,
+                live=False,
+                overlay=overlay,
+                latency_ms=last_latency_ms,
+                recorder=recorder,
+                video_saved=now < video_saved_until,
+            )
+            _write_recording(recorder, display)
             cv2.imshow("VTO Smart Mirror - Virtual Try-On", display)
             if now >= snapshot_until:
                 state = STATE_LIVE
@@ -173,7 +235,12 @@ def main():
                 qr_image = None
                 print("[INFO] Resuming live mirror.")
             key = cv2.waitKey(1) & 0xFF
-            if key == ord("q") or key == ord("Q"):
+            quit_app, saved_video = _handle_key(
+                key, recorder, display, key_state
+            )
+            if saved_video:
+                video_saved_until = time.time() + VIDEO_SAVED_SEC
+            if quit_app:
                 break
             continue
 
@@ -194,6 +261,7 @@ def main():
         if not success or frame is None:
             continue
 
+        infer_t0 = time.perf_counter()
         body_data = tracker.process_frame(frame)
         if body_data:
             last_body_data = body_data
@@ -224,10 +292,19 @@ def main():
 
         frame = overlay.apply_overlay(frame, display_body)
         composite = frame.copy()
+        last_latency_ms = (time.perf_counter() - infer_t0) * 1000.0
 
         fit_advice = recommend_size(display_body, frame.shape[:2])
         frame = _draw_mirror_hud(
-            hud, frame, catalog, live=True, overlay=overlay, fit_advice=fit_advice
+            hud,
+            frame,
+            catalog,
+            live=True,
+            overlay=overlay,
+            fit_advice=fit_advice,
+            latency_ms=last_latency_ms,
+            recorder=recorder,
+            video_saved=time.time() < video_saved_until,
         )
         frame = hud.draw_hand_cursor(frame, gestures.last_fingertip)
         if time.time() < gesture_banner_until:
@@ -249,10 +326,14 @@ def main():
                 countdown_started_at = None
                 snapshot_taken = False
 
+        _write_recording(recorder, frame)
         cv2.imshow("VTO Smart Mirror - Virtual Try-On", frame)
 
         key = cv2.waitKey(1) & 0xFF
-        if key == ord("q") or key == ord("Q"):
+        quit_app, saved_video = _handle_key(key, recorder, frame, key_state)
+        if saved_video:
+            video_saved_until = time.time() + VIDEO_SAVED_SEC
+        if quit_app:
             break
         elif key == ord("n") or key == ord("N"):
             banner = _switch_garment(
@@ -292,6 +373,7 @@ def main():
                 snapshot_taken = False
                 print("[INFO] Snapshot countdown started...")
 
+    recorder.stop()
     cam.release()
     tracker.close()
     gestures.close()
