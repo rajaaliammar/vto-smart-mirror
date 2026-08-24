@@ -7,6 +7,7 @@ class Garment(BaseModel):
     id: str
     name: str
     category: str = "tshirt"
+    slot: str = "upper"
     image_url: str
     available_sizes: List[str] = Field(default_factory=lambda: ["S", "M", "L", "XL"])
     default_scale: float = 1.55
@@ -15,6 +16,8 @@ class Garment(BaseModel):
 class GarmentListResponse(BaseModel):
     count: int
     garments: List[Garment]
+    upper: List[Garment] = Field(default_factory=list)
+    lower: List[Garment] = Field(default_factory=list)
 
 
 class GarmentUploadResponse(BaseModel):
@@ -27,3 +30,27 @@ class GarmentUploadForm(BaseModel):
     category: str = "tshirt"
     available_sizes: Optional[List[str]] = None
     default_scale: float = 1.55
+
+
+class TryOnSwitchRequest(BaseModel):
+    garment_id: str
+
+
+class TryOnSwitchResponse(BaseModel):
+    message: str
+    garment_id: str
+    slot: str
+    seq: int
+    applied: bool = False
+
+
+class CaptureItem(BaseModel):
+    filename: str
+    kind: str
+    url: str
+
+
+class CaptureListResponse(BaseModel):
+    count: int
+    snapshots: List[CaptureItem] = Field(default_factory=list)
+    videos: List[CaptureItem] = Field(default_factory=list)

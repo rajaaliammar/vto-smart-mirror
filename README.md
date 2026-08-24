@@ -128,24 +128,34 @@ On first pose run, MediaPipe downloads `pose_landmarker.task` (one-time).
 
 ### 2. Start the catalog API
 
-From the `backend` folder so FastAPI can import `app`:
+From the project root:
 
 ```bash
-cd backend
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn main:app --app-dir backend --host 0.0.0.0 --port 8000
 ```
 
-Confirm [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health). Garments are served from `backend/static/garments/` and seeded from `assets/sample_clothes/`.
+Or from `backend/`: `uvicorn main:app --host 0.0.0.0 --port 8000`
+
+Confirm [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health) and [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/health` | Status, loaded models, last try-on command |
+| GET | `/api/v1/garments` | Upper + lower PNGs from `assets/sample_clothes/` |
+| POST | `/api/v1/tryon/switch` | Body `{"garment_id": "tshirt1"}` — live mirror switches |
+| GET | `/api/v1/captures` | Snapshot and video download URLs |
 
 ### 3. Launch the Smart Mirror
 
-From the **project root** (second terminal, venv active):
+**Windows (one click):** double-click `run_mirror.bat`. It activates `venv` or `.venv`, starts FastAPI on port 8000, then opens the mirror. Console and API output append to `logs/app.log`.
+
+From the **project root** (venv active):
 
 ```bash
 python main.py
 ```
 
-Stand about 1.5–2.5 m from the camera, shoulders visible. If the API is down, the client falls back to local PNGs in `assets/sample_clothes/`. Keep the API running if you want phones to fetch snapshot URLs.
+Stand about 1.5–2.5 m from the camera, shoulders visible. If the API is down, the client falls back to local PNGs in `assets/sample_clothes/`. Keep the API running if you want phones to fetch snapshot URLs or remote garment switching.
 
 ### Sample catalog layout
 
@@ -197,14 +207,17 @@ Snapshots: `captures/VTO_TryOn_<timestamp>.png` (API path `/captures/<file>`)
 ```
 vto-smart-mirror/
 ├── main.py                      # Smart Mirror entry point
+├── run_mirror.bat               # One-click API + mirror launcher (Windows)
 ├── requirements.txt
+├── logs/app.log                 # Runtime log (created on launch)
 ├── assets/sample_clothes/       # Local PNG catalog
 ├── captures/                    # Snapshot PNGs + videos/
 │   └── videos/                  # Session MP4 recordings
 ├── config/settings.py
 ├── core/                        # Vision, overlay, HUD, recording
 └── backend/
-    ├── app/                     # FastAPI app + catalog router
+    ├── main.py                  # FastAPI entry (health, garments, tryon, captures)
+    ├── app/                     # Routers and schemas
     └── static/garments/         # API-served clothing assets
 ```
 

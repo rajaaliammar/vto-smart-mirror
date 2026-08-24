@@ -28,7 +28,8 @@ Thumbs.db
 *.sqlite3
 *.db
 backend/app/*.db
-logs/
+logs/*
+!logs/.gitkeep
 
 # Local ML model downloads
 *.task

@@ -121,12 +121,25 @@ def _seed_from_disk() -> None:
     _save_catalog(catalog)
 
 
+LOWER_CATEGORIES = {"pants", "jeans", "pant", "bottom", "trousers"}
+
+
+def _slot_for(category: str, filename: str = "") -> str:
+    key = str(category or "").lower()
+    name = str(filename or "").lower()
+    if key in LOWER_CATEGORIES or "jean" in name or "pant" in name:
+        return "lower"
+    return "upper"
+
+
 def _to_model(entry: dict, request: Request) -> Garment:
     filename = entry["filename"]
+    category = entry.get("category", "tshirt")
     return Garment(
         id=entry["id"],
         name=entry["name"],
-        category=entry.get("category", "tshirt"),
+        category=category,
+        slot=_slot_for(category, filename),
         image_url=_image_url(request, filename),
         available_sizes=entry.get("available_sizes", DEFAULT_SIZES),
         default_scale=float(entry.get("default_scale", DEFAULT_SCALE)),
@@ -144,7 +157,14 @@ def list_garments(request: Request):
             continue
         garments.append(_to_model(entry, request))
     garments.sort(key=lambda item: item.name.lower())
-    return GarmentListResponse(count=len(garments), garments=garments)
+    upper = [item for item in garments if item.slot == "upper"]
+    lower = [item for item in garments if item.slot == "lower"]
+    return GarmentListResponse(
+        count=len(garments),
+        garments=garments,
+        upper=upper,
+        lower=lower,
+    )
 
 
 @router.get("/{garment_id}", response_model=Garment)

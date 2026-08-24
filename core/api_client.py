@@ -247,3 +247,19 @@ class GarmentApiClient:
 
         print(f"[WARN] Unrecognized garment location: {location}")
         return ""
+
+    def select_by_id(self, garment_id: str) -> str:
+        """Select a catalog item by id. Returns 'upper', 'lower', or ''."""
+        wanted = str(garment_id or "").strip().lower()
+        if not wanted:
+            return ""
+        for index, item in enumerate(self.upper_items):
+            if str(item.get("id") or "").lower() == wanted:
+                self.upper_index = index
+                self.current_index = index
+                return "upper"
+        for index, item in enumerate(self.lower_items):
+            if str(item.get("id") or "").lower() == wanted:
+                self.lower_index = index
+                return "lower"
+        return ""

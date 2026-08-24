@@ -4,6 +4,7 @@ from queue import Empty, Queue
 
 import cv2
 from core.api_client import GarmentApiClient
+from core.app_logging import close_app_logging, setup_app_logging
 from core.camera import CameraStream
 from core.gesture_detector import SWIPE_LEFT, SWIPE_RIGHT, HandGestureDetector
 from core.garment_overlay import COLOR_VARIANTS
@@ -11,6 +12,7 @@ from core.overlay import GarmentOverlay
 from core.qr_generator import capture_download_url, generate_qr_image, overlay_qr_code
 from core.snapshot import MirrorVideoRecorder, save_snapshot_async
 from core.tracker import PoseTracker
+from core.tryon_bridge import consume_if_new, mark_applied
 from core.ui_overlay import MirrorHUD, recommend_size
 from core.visualization import UIOverlay
 
@@ -42,6 +44,27 @@ def _switch_garment(overlay, catalog, direction: str, banner: str):
     if not _load_current(overlay, catalog):
         return ""
     return banner
+
+
+def _apply_remote_switch(overlay, catalog, command) -> str:
+    garment_id = str(command.get("garment_id") or "")
+    slot = catalog.select_by_id(garment_id) or str(command.get("slot") or "")
+    if slot == "upper":
+        if not _load_current(overlay, catalog):
+            return ""
+        mark_applied(int(command.get("seq") or 0), garment_id)
+        return f"API: {catalog.get_current_name()}"
+    if slot == "lower":
+        lower_path = catalog.get_current_lower_path()
+        if lower_path and overlay.load_lower_garment(lower_path):
+            overlay.outfit_mode = "full"
+            mark_applied(int(command.get("seq") or 0), garment_id)
+            print("[INFO] API switched lower garment; outfit mode FULL")
+            return "API: FULL OUTFIT"
+        print("[WARN] API lower garment failed to load.")
+        return ""
+    print(f"[WARN] API garment id not in catalog: {garment_id}")
+    return ""
 
 
 def _draw_mirror_hud(
@@ -139,9 +162,37 @@ def _countdown_label(elapsed: float):
     return None
 
 
+def _release_runtime(cam, tracker, gestures, recorder):
+    if recorder is not None:
+        try:
+            recorder.stop()
+        except Exception as exc:
+            print(f"[WARN] Recorder release failed: {exc}")
+    if cam is not None:
+        try:
+            cam.release()
+        except Exception as exc:
+            print(f"[WARN] Camera release failed: {exc}")
+    if tracker is not None:
+        try:
+            tracker.close()
+        except Exception as exc:
+            print(f"[WARN] Tracker close failed: {exc}")
+    if gestures is not None:
+        try:
+            gestures.close()
+        except Exception as exc:
+            print(f"[WARN] Gesture detector close failed: {exc}")
+    try:
+        cv2.destroyAllWindows()
+    except Exception:
+        pass
+
+
 def main():
+    logger = setup_app_logging("vto.mirror")
     print("==========================================")
-    print(" VTO SMART MIRROR - PHASE 9 (RECORD + BENCHMARKS)")
+    print(" VTO SMART MIRROR - PHASE 10 (API + LAUNCH)")
     print("==========================================")
     print(" Controls:")
     print("  'N' / Swipe Right -> Next Shirt")
@@ -152,233 +203,247 @@ def main():
     print("  'R' -> Start / Stop MP4 recording")
     print("  'Q' -> Exit Application")
     print("==========================================")
-    print("[INFO] Keep the FastAPI server on :8000 so phones can download captures.")
+    print("[INFO] FastAPI: GET /health  GET /api/v1/garments  POST /api/v1/tryon/switch")
+    print("[INFO] Captures: GET /api/v1/captures  (keep server on :8000)")
     print("[INFO] Recordings save to captures/videos/ as H.264 .mp4")
+    print("[INFO] Logs: logs/app.log")
+    logger.info("Smart Mirror starting")
 
-    cam = CameraStream(device_index=0, width=1280, height=720)
-    tracker = PoseTracker()
-    gestures = HandGestureDetector(
-        min_detection_confidence=0.4,
-        min_tracking_confidence=0.4,
-        min_swipe_distance=0.035,
-        cooldown_sec=0.45,
-        process_every_n=1,
-    )
-    hud = MirrorHUD()
-    ui = UIOverlay()
-    catalog = GarmentApiClient()
+    cam = None
+    tracker = None
+    gestures = None
+    recorder = None
+    try:
+        cam = CameraStream(device_index=0, width=1280, height=720)
+        tracker = PoseTracker()
+        gestures = HandGestureDetector(
+            min_detection_confidence=0.4,
+            min_tracking_confidence=0.4,
+            min_swipe_distance=0.035,
+            cooldown_sec=0.45,
+            process_every_n=1,
+        )
+        hud = MirrorHUD()
+        ui = UIOverlay()
+        catalog = GarmentApiClient()
 
-    overlay = GarmentOverlay()
-    overlay.outfit_mode = "upper"
-    recorder = MirrorVideoRecorder(fps=CAMERA_RECORD_FPS)
-    _preload_catalog(overlay, catalog)
-    print("[INFO] Mode: UPPER ONLY (press O for optional full outfit)")
+        overlay = GarmentOverlay()
+        overlay.outfit_mode = "upper"
+        recorder = MirrorVideoRecorder(fps=CAMERA_RECORD_FPS)
+        _preload_catalog(overlay, catalog)
+        print("[INFO] Mode: UPPER ONLY (press O for optional full outfit)")
 
-    gesture_banner = ""
-    gesture_banner_until = 0.0
-    last_body_data = None
-    missed_pose_frames = 0
-    countdown_started_at = None
-    snapshot_taken = False
-    saved_queue = Queue()
+        gesture_banner = ""
+        gesture_banner_until = 0.0
+        last_body_data = None
+        missed_pose_frames = 0
+        countdown_started_at = None
+        snapshot_taken = False
+        saved_queue = Queue()
 
-    state = STATE_LIVE
-    frozen_frame = None
-    qr_image = None
-    snapshot_until = 0.0
-    last_latency_ms = 0.0
-    video_saved_until = 0.0
-    key_state = {"last_r": 0.0}
+        state = STATE_LIVE
+        frozen_frame = None
+        qr_image = None
+        snapshot_until = 0.0
+        last_latency_ms = 0.0
+        video_saved_until = 0.0
+        key_state = {"last_r": 0.0}
+        last_tryon_seq = 0
 
-    while True:
-        now = time.time()
+        while True:
+            now = time.time()
 
-        if state == STATE_SHOW_SNAPSHOT and frozen_frame is not None:
-            display = frozen_frame.copy()
-            remaining = max(0, int(snapshot_until - now))
-            cv2.putText(
-                display,
-                "Scan to Download",
-                (40, 140),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1.15,
-                (0, 255, 255),
-                3,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                display,
-                f"Resuming in {remaining}s",
-                (40, 185),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (220, 220, 220),
-                2,
-                cv2.LINE_AA,
-            )
-            display = overlay_qr_code(display, qr_image)
-            display = _draw_mirror_hud(
+            if state == STATE_SHOW_SNAPSHOT and frozen_frame is not None:
+                display = frozen_frame.copy()
+                remaining = max(0, int(snapshot_until - now))
+                cv2.putText(
+                    display,
+                    "Scan to Download",
+                    (40, 140),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.15,
+                    (0, 255, 255),
+                    3,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    display,
+                    f"Resuming in {remaining}s",
+                    (40, 185),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (220, 220, 220),
+                    2,
+                    cv2.LINE_AA,
+                )
+                display = overlay_qr_code(display, qr_image)
+                display = _draw_mirror_hud(
+                    hud,
+                    display,
+                    catalog,
+                    live=False,
+                    overlay=overlay,
+                    latency_ms=last_latency_ms,
+                    recorder=recorder,
+                    video_saved=now < video_saved_until,
+                )
+                _write_recording(recorder, display)
+                cv2.imshow("VTO Smart Mirror - Virtual Try-On", display)
+                if now >= snapshot_until:
+                    state = STATE_LIVE
+                    frozen_frame = None
+                    qr_image = None
+                    print("[INFO] Resuming live mirror.")
+                key = cv2.waitKey(1) & 0xFF
+                quit_app, saved_video = _handle_key(
+                    key, recorder, display, key_state
+                )
+                if saved_video:
+                    video_saved_until = time.time() + VIDEO_SAVED_SEC
+                if quit_app:
+                    break
+                continue
+
+            try:
+                saved_path, freeze = saved_queue.get_nowait()
+                filename = os.path.basename(saved_path)
+                url = capture_download_url(filename)
+                qr_image = generate_qr_image(url)
+                frozen_frame = freeze
+                state = STATE_SHOW_SNAPSHOT
+                snapshot_until = time.time() + SNAPSHOT_HOLD_SEC
+                print(f"[INFO] Scan to download: {url}")
+                continue
+            except Empty:
+                pass
+
+            success, frame = cam.get_frame()
+            if not success or frame is None:
+                continue
+
+            command = consume_if_new(last_tryon_seq)
+            if command:
+                last_tryon_seq = int(command.get("seq") or last_tryon_seq)
+                banner = _apply_remote_switch(overlay, catalog, command)
+                if banner:
+                    gesture_banner = banner
+                    gesture_banner_until = time.time() + GESTURE_BANNER_SEC
+
+            infer_t0 = time.perf_counter()
+            body_data = tracker.process_frame(frame)
+            if body_data:
+                last_body_data = body_data
+                missed_pose_frames = 0
+                display_body = body_data
+            else:
+                missed_pose_frames += 1
+                if missed_pose_frames <= POSE_HOLD_FRAMES and last_body_data:
+                    display_body = last_body_data
+                else:
+                    display_body = None
+
+            swipe = gestures.process_frame(frame)
+            if swipe == SWIPE_RIGHT:
+                banner = _switch_garment(
+                    overlay, catalog, "next", "Gesture: NEXT ->"
+                )
+                if banner:
+                    gesture_banner = banner
+                    gesture_banner_until = time.time() + GESTURE_BANNER_SEC
+            elif swipe == SWIPE_LEFT:
+                banner = _switch_garment(
+                    overlay, catalog, "prev", "Gesture: PREV <-"
+                )
+                if banner:
+                    gesture_banner = banner
+                    gesture_banner_until = time.time() + GESTURE_BANNER_SEC
+
+            frame = overlay.apply_overlay(frame, display_body)
+            composite = frame.copy()
+            last_latency_ms = (time.perf_counter() - infer_t0) * 1000.0
+
+            fit_advice = recommend_size(display_body, frame.shape[:2])
+            frame = _draw_mirror_hud(
                 hud,
-                display,
+                frame,
                 catalog,
-                live=False,
+                live=True,
                 overlay=overlay,
+                fit_advice=fit_advice,
                 latency_ms=last_latency_ms,
                 recorder=recorder,
-                video_saved=now < video_saved_until,
+                video_saved=time.time() < video_saved_until,
             )
-            _write_recording(recorder, display)
-            cv2.imshow("VTO Smart Mirror - Virtual Try-On", display)
-            if now >= snapshot_until:
-                state = STATE_LIVE
-                frozen_frame = None
-                qr_image = None
-                print("[INFO] Resuming live mirror.")
+            frame = hud.draw_hand_cursor(frame, gestures.last_fingertip)
+            if time.time() < gesture_banner_until:
+                frame = ui.draw_gesture(frame, gesture_banner)
+
+            if countdown_started_at is not None:
+                elapsed = time.time() - countdown_started_at
+                label = _countdown_label(elapsed)
+                if label:
+                    frame = ui.draw_countdown(frame, label)
+                    if label == "CHEESE!" and not snapshot_taken:
+                        freeze = composite.copy()
+                        save_snapshot_async(
+                            composite,
+                            on_saved=lambda path, freeze=freeze: saved_queue.put((path, freeze)),
+                        )
+                        snapshot_taken = True
+                else:
+                    countdown_started_at = None
+                    snapshot_taken = False
+
+            _write_recording(recorder, frame)
+            cv2.imshow("VTO Smart Mirror - Virtual Try-On", frame)
+
             key = cv2.waitKey(1) & 0xFF
-            quit_app, saved_video = _handle_key(
-                key, recorder, display, key_state
-            )
+            quit_app, saved_video = _handle_key(key, recorder, frame, key_state)
             if saved_video:
                 video_saved_until = time.time() + VIDEO_SAVED_SEC
             if quit_app:
                 break
-            continue
-
-        try:
-            saved_path, freeze = saved_queue.get_nowait()
-            filename = os.path.basename(saved_path)
-            url = capture_download_url(filename)
-            qr_image = generate_qr_image(url)
-            frozen_frame = freeze
-            state = STATE_SHOW_SNAPSHOT
-            snapshot_until = time.time() + SNAPSHOT_HOLD_SEC
-            print(f"[INFO] Scan to download: {url}")
-            continue
-        except Empty:
-            pass
-
-        success, frame = cam.get_frame()
-        if not success or frame is None:
-            continue
-
-        infer_t0 = time.perf_counter()
-        body_data = tracker.process_frame(frame)
-        if body_data:
-            last_body_data = body_data
-            missed_pose_frames = 0
-            display_body = body_data
-        else:
-            missed_pose_frames += 1
-            if missed_pose_frames <= POSE_HOLD_FRAMES and last_body_data:
-                display_body = last_body_data
-            else:
-                display_body = None
-
-        swipe = gestures.process_frame(frame)
-        if swipe == SWIPE_RIGHT:
-            banner = _switch_garment(
-                overlay, catalog, "next", "Gesture: NEXT ->"
-            )
-            if banner:
-                gesture_banner = banner
-                gesture_banner_until = time.time() + GESTURE_BANNER_SEC
-        elif swipe == SWIPE_LEFT:
-            banner = _switch_garment(
-                overlay, catalog, "prev", "Gesture: PREV <-"
-            )
-            if banner:
-                gesture_banner = banner
-                gesture_banner_until = time.time() + GESTURE_BANNER_SEC
-
-        frame = overlay.apply_overlay(frame, display_body)
-        composite = frame.copy()
-        last_latency_ms = (time.perf_counter() - infer_t0) * 1000.0
-
-        fit_advice = recommend_size(display_body, frame.shape[:2])
-        frame = _draw_mirror_hud(
-            hud,
-            frame,
-            catalog,
-            live=True,
-            overlay=overlay,
-            fit_advice=fit_advice,
-            latency_ms=last_latency_ms,
-            recorder=recorder,
-            video_saved=time.time() < video_saved_until,
-        )
-        frame = hud.draw_hand_cursor(frame, gestures.last_fingertip)
-        if time.time() < gesture_banner_until:
-            frame = ui.draw_gesture(frame, gesture_banner)
-
-        if countdown_started_at is not None:
-            elapsed = time.time() - countdown_started_at
-            label = _countdown_label(elapsed)
-            if label:
-                frame = ui.draw_countdown(frame, label)
-                if label == "CHEESE!" and not snapshot_taken:
-                    freeze = composite.copy()
-                    save_snapshot_async(
-                        composite,
-                        on_saved=lambda path, freeze=freeze: saved_queue.put((path, freeze)),
-                    )
-                    snapshot_taken = True
-            else:
-                countdown_started_at = None
-                snapshot_taken = False
-
-        _write_recording(recorder, frame)
-        cv2.imshow("VTO Smart Mirror - Virtual Try-On", frame)
-
-        key = cv2.waitKey(1) & 0xFF
-        quit_app, saved_video = _handle_key(key, recorder, frame, key_state)
-        if saved_video:
-            video_saved_until = time.time() + VIDEO_SAVED_SEC
-        if quit_app:
-            break
-        elif key == ord("n") or key == ord("N"):
-            banner = _switch_garment(
-                overlay, catalog, "next", "Key: NEXT ->"
-            )
-            if banner:
-                gesture_banner = banner
-                gesture_banner_until = time.time() + GESTURE_BANNER_SEC
-        elif key == ord("p") or key == ord("P"):
-            banner = _switch_garment(
-                overlay, catalog, "prev", "Key: PREV <-"
-            )
-            if banner:
-                gesture_banner = banner
-                gesture_banner_until = time.time() + GESTURE_BANNER_SEC
-        elif key == ord("c") or key == ord("C"):
-            variant = overlay.cycle_color()
-            print(f"[INFO] Color: {variant['label']}")
-        elif key == ord("o") or key == ord("O"):
-            if overlay.outfit_mode != "full":
-                lower_path = catalog.get_current_lower_path()
-                if not lower_path:
-                    print("[WARN] No pants/jeans in catalog. Staying on UPPER ONLY.")
-                elif overlay.load_lower_garment(lower_path):
-                    overlay.outfit_mode = "full"
-                    print("[INFO] Outfit mode: FULL (shirt + pants)")
+            elif key == ord("n") or key == ord("N"):
+                banner = _switch_garment(
+                    overlay, catalog, "next", "Key: NEXT ->"
+                )
+                if banner:
+                    gesture_banner = banner
+                    gesture_banner_until = time.time() + GESTURE_BANNER_SEC
+            elif key == ord("p") or key == ord("P"):
+                banner = _switch_garment(
+                    overlay, catalog, "prev", "Key: PREV <-"
+                )
+                if banner:
+                    gesture_banner = banner
+                    gesture_banner_until = time.time() + GESTURE_BANNER_SEC
+            elif key == ord("c") or key == ord("C"):
+                variant = overlay.cycle_color()
+                print(f"[INFO] Color: {variant['label']}")
+            elif key == ord("o") or key == ord("O"):
+                if overlay.outfit_mode != "full":
+                    lower_path = catalog.get_current_lower_path()
+                    if not lower_path:
+                        print("[WARN] No pants/jeans in catalog. Staying on UPPER ONLY.")
+                    elif overlay.load_lower_garment(lower_path):
+                        overlay.outfit_mode = "full"
+                        print("[INFO] Outfit mode: FULL (shirt + pants)")
+                    else:
+                        overlay.outfit_mode = "upper"
+                        print("[WARN] Pants image failed to load. Staying on UPPER ONLY.")
                 else:
                     overlay.outfit_mode = "upper"
-                    print("[WARN] Pants image failed to load. Staying on UPPER ONLY.")
-            else:
-                overlay.outfit_mode = "upper"
-                overlay.clear_lower_garment()
-                print("[INFO] Outfit mode: UPPER ONLY")
-        elif key == ord("s") or key == ord("S"):
-            if countdown_started_at is None and state == STATE_LIVE:
-                countdown_started_at = time.time()
-                snapshot_taken = False
-                print("[INFO] Snapshot countdown started...")
-
-    recorder.stop()
-    cam.release()
-    tracker.close()
-    gestures.close()
-    cv2.destroyAllWindows()
-    print("[INFO] System exited cleanly.")
+                    overlay.clear_lower_garment()
+                    print("[INFO] Outfit mode: UPPER ONLY")
+            elif key == ord("s") or key == ord("S"):
+                if countdown_started_at is None and state == STATE_LIVE:
+                    countdown_started_at = time.time()
+                    snapshot_taken = False
+                    print("[INFO] Snapshot countdown started...")
+    finally:
+        _release_runtime(cam, tracker, gestures, recorder)
+        print("[INFO] System exited cleanly.")
+        close_app_logging()
 
 
 if __name__ == "__main__":
