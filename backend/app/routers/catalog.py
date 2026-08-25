@@ -8,6 +8,7 @@ from typing import Dict, List
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from app.schemas.garment import Garment, GarmentListResponse, GarmentUploadResponse
+from core.tryon_bridge import request_switch
 
 router = APIRouter(prefix="/garments", tags=["garments"])
 
@@ -224,5 +225,8 @@ async def upload_garment(
     catalog[garment_id] = entry
     _save_catalog(catalog)
 
+    slot = _slot_for(entry.get("category", "tshirt"), unique_name)
+    request_switch(garment_id, slot=slot)
+
     garment = _to_model(entry, request)
-    return GarmentUploadResponse(message="Garment uploaded successfully.", garment=garment)
+    return GarmentUploadResponse(message="Garment uploaded. Try-on queued.", garment=garment)

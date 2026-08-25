@@ -18,7 +18,7 @@ if exist "%ROOT%\venv\Scripts\python.exe" (
 if not exist "%ROOT%\logs" mkdir "%ROOT%\logs"
 
 echo [INFO] Starting FastAPI at http://127.0.0.1:8000 ...
-start "VTO-API" /min cmd /c "cd /d "%ROOT%" && "%PY%" -m uvicorn main:app --app-dir backend --host 0.0.0.0 --port 8000 >> "%ROOT%\logs\app.log" 2>&1"
+start "VTO-API" /min cmd /c "cd /d "%ROOT%" && "%PY%" -m uvicorn main:app --app-dir backend --host 0.0.0.0 --port 8000 >> "%ROOT%\logs\api.log" 2>&1"
 
 timeout /t 2 /nobreak >nul
 

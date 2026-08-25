@@ -39,3 +39,8 @@ openh264*.dll
 captures/
 backend/static/captures/*
 !backend/static/captures/.gitkeep
+backend/static/live/*.jpg
+backend/static/live/*.tmp
+backend/static/live/*.json
+backend/static/tryon_command.json
+backend/static/studio_state.json

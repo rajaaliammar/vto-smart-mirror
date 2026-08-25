@@ -26,9 +26,11 @@ def compute_garment_size(
     garment_w: int,
     frame_w: int,
     frame_h: int,
+    scale: Optional[float] = None,
 ) -> Tuple[int, int]:
     """Scale width from shoulders and length from shoulder-to-hip distance."""
-    target_width = int(shoulder_width * SHOULDER_SCALE)
+    shoulder_scale = float(scale) if scale else SHOULDER_SCALE
+    target_width = int(shoulder_width * shoulder_scale)
     target_width = int(np.clip(target_width, 40, int(frame_w * MAX_WIDTH_FRAME_FRAC)))
 
     aspect = garment_h / float(max(garment_w, 1))
@@ -89,9 +91,11 @@ def compute_pants_size(
     garment_w: int,
     frame_w: int,
     frame_h: int,
+    scale: Optional[float] = None,
 ) -> Tuple[int, int]:
     """Scale jeans width from hips and length from hip-to-ankle distance."""
-    target_width = int(max(hip_width, 1.0) * HIP_SCALE)
+    hip_scale = float(scale) if scale else HIP_SCALE
+    target_width = int(max(hip_width, 1.0) * hip_scale)
     target_width = int(np.clip(target_width, 40, int(frame_w * MAX_PANTS_WIDTH_FRAC)))
 
     aspect = garment_h / float(max(garment_w, 1))

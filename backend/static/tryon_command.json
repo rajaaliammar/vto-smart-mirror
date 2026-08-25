@@ -1,9 +1,9 @@
 {
-  "garment_id": "tshirt1",
-  "slot": "upper",
-  "seq": 1,
+  "action": "record",
+  "garment_id": "",
+  "slot": "",
+  "seq": 26,
   "applied": true,
-  "requested_at": 1787596969.7412915,
-  "applied_garment_id": "tshirt1",
-  "applied_at": 1787597774.0407948
+  "requested_at": 1787669126.0509334,
+  "applied_at": 1787669126.7430794
 }

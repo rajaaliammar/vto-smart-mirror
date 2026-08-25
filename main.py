@@ -9,10 +9,11 @@ from core.camera import CameraStream
 from core.gesture_detector import SWIPE_LEFT, SWIPE_RIGHT, HandGestureDetector
 from core.garment_overlay import COLOR_VARIANTS
 from core.overlay import GarmentOverlay
+from core.preview_stream import publish_preview
 from core.qr_generator import capture_download_url, generate_qr_image, overlay_qr_code
 from core.snapshot import MirrorVideoRecorder, save_snapshot_async
 from core.tracker import PoseTracker
-from core.tryon_bridge import consume_if_new, mark_applied
+from core.tryon_bridge import consume_if_new, mark_applied, read_studio, write_studio
 from core.ui_overlay import MirrorHUD, recommend_size
 from core.visualization import UIOverlay
 
@@ -48,6 +49,7 @@ def _switch_garment(overlay, catalog, direction: str, banner: str):
 
 def _apply_remote_switch(overlay, catalog, command) -> str:
     garment_id = str(command.get("garment_id") or "")
+    catalog.refresh()
     slot = catalog.select_by_id(garment_id) or str(command.get("slot") or "")
     if slot == "upper":
         if not _load_current(overlay, catalog):
@@ -100,6 +102,34 @@ def _draw_mirror_hud(
         rec_elapsed=rec_elapsed,
         video_saved=video_saved,
     )
+
+
+def _publish_overlay(frame, catalog, overlay, hud, recorder, fit_advice=None, gestures_enabled=True):
+    color = overlay.current_color() if overlay is not None else {}
+    current = catalog.get_current() if catalog is not None else None
+    publish_preview(
+        frame,
+        meta={
+            "garment_id": (current or {}).get("id"),
+            "garment_name": catalog.get_current_name() if catalog else None,
+            "slot": overlay.outfit_mode if overlay else "upper",
+            "fit_size": (fit_advice or {}).get("size"),
+            "fit_score": (fit_advice or {}).get("score"),
+            "color_key": color.get("key"),
+            "color_label": color.get("label"),
+            "gestures_enabled": bool(gestures_enabled),
+            "recording": bool(recorder and recorder.is_recording),
+            "fps": round(float(getattr(hud, "fps", 0) or 0), 1),
+            "live": True,
+        },
+    )
+
+
+def _apply_studio(overlay):
+    studio = read_studio()
+    overlay.set_color_key(studio.get("color_key") or "original")
+    overlay.fit_scale = float(studio.get("fit_scale") or 1.55)
+    return bool(studio.get("gestures_enabled", True)), studio
 
 
 def _write_recording(recorder, frame) -> None:
@@ -288,6 +318,7 @@ def main():
                     video_saved=now < video_saved_until,
                 )
                 _write_recording(recorder, display)
+                _publish_overlay(display, catalog, overlay, hud, recorder, gestures_enabled=True)
                 cv2.imshow("VTO Smart Mirror - Virtual Try-On", display)
                 if now >= snapshot_until:
                     state = STATE_LIVE
@@ -321,13 +352,34 @@ def main():
             if not success or frame is None:
                 continue
 
+            gestures_enabled, _studio = _apply_studio(overlay)
+
             command = consume_if_new(last_tryon_seq)
             if command:
                 last_tryon_seq = int(command.get("seq") or last_tryon_seq)
-                banner = _apply_remote_switch(overlay, catalog, command)
-                if banner:
-                    gesture_banner = banner
+                action = str(command.get("action") or "switch")
+                if action == "snapshot":
+                    if countdown_started_at is None and state == STATE_LIVE:
+                        countdown_started_at = time.time()
+                        snapshot_taken = False
+                        print("[INFO] API snapshot countdown started...")
+                    mark_applied(last_tryon_seq)
+                elif action == "record":
+                    saved = _toggle_recording(recorder, frame, key_state)
+                    if saved:
+                        video_saved_until = time.time() + VIDEO_SAVED_SEC
+                        gesture_banner = "API: VIDEO SAVED!"
+                    else:
+                        gesture_banner = (
+                            "API: REC ON" if recorder.is_recording else "API: REC"
+                        )
                     gesture_banner_until = time.time() + GESTURE_BANNER_SEC
+                    mark_applied(last_tryon_seq)
+                else:
+                    banner = _apply_remote_switch(overlay, catalog, command)
+                    if banner:
+                        gesture_banner = banner
+                        gesture_banner_until = time.time() + GESTURE_BANNER_SEC
 
             infer_t0 = time.perf_counter()
             body_data = tracker.process_frame(frame)
@@ -342,7 +394,11 @@ def main():
                 else:
                     display_body = None
 
-            swipe = gestures.process_frame(frame)
+            swipe = None
+            if gestures_enabled:
+                swipe = gestures.process_frame(frame)
+            else:
+                gestures.last_fingertip = None
             if swipe == SWIPE_RIGHT:
                 banner = _switch_garment(
                     overlay, catalog, "next", "Gesture: NEXT ->"
@@ -374,7 +430,7 @@ def main():
                 recorder=recorder,
                 video_saved=time.time() < video_saved_until,
             )
-            frame = hud.draw_hand_cursor(frame, gestures.last_fingertip)
+            frame = hud.draw_hand_cursor(frame, gestures.last_fingertip if gestures_enabled else None)
             if time.time() < gesture_banner_until:
                 frame = ui.draw_gesture(frame, gesture_banner)
 
@@ -395,6 +451,15 @@ def main():
                     snapshot_taken = False
 
             _write_recording(recorder, frame)
+            _publish_overlay(
+                frame,
+                catalog,
+                overlay,
+                hud,
+                recorder,
+                fit_advice=fit_advice,
+                gestures_enabled=gestures_enabled,
+            )
             cv2.imshow("VTO Smart Mirror - Virtual Try-On", frame)
 
             key = cv2.waitKey(1) & 0xFF
@@ -419,6 +484,7 @@ def main():
                     gesture_banner_until = time.time() + GESTURE_BANNER_SEC
             elif key == ord("c") or key == ord("C"):
                 variant = overlay.cycle_color()
+                write_studio(color_key=variant["key"])
                 print(f"[INFO] Color: {variant['label']}")
             elif key == ord("o") or key == ord("O"):
                 if overlay.outfit_mode != "full":

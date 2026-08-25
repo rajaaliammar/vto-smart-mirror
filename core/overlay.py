@@ -6,6 +6,7 @@ from core.garment_overlay import (
     AMBIENT_REF_V,
     COLOR_VARIANTS,
     COLLAR_LIFT,
+    HIP_SCALE,
     WAIST_RISE,
     adapt_garment_lighting,
     apply_palette_color,
@@ -33,12 +34,21 @@ class GarmentOverlay:
         self._cache = {}
         self._tint_cache = {}
         self.color_index = 0
+        self.fit_scale = 1.55
         self._ambient_v = AMBIENT_REF_V
         if garment_path:
             self.load_garment(garment_path)
 
     def cycle_color(self):
         self.color_index = (self.color_index + 1) % len(COLOR_VARIANTS)
+        return self.current_color()
+
+    def set_color_key(self, key: str):
+        wanted = str(key or "").strip().lower()
+        for index, variant in enumerate(COLOR_VARIANTS):
+            if variant["key"] == wanted:
+                self.color_index = index
+                return variant
         return self.current_color()
 
     def current_color(self):
@@ -377,6 +387,7 @@ class GarmentOverlay:
             source.shape[1],
             frame_w,
             frame_h,
+            scale=self.fit_scale,
         )
         target_width = int(self._smooth("width", float(target_width)))
         target_height = int(self._smooth("height", float(target_height)))
@@ -427,6 +438,7 @@ class GarmentOverlay:
             torso = body_data.get("torso_length")
             leg_length = float(torso) * 1.85 if torso else hip_width * 2.4
 
+        pants_scale = HIP_SCALE * (float(self.fit_scale) / 1.55)
         target_width, target_height = compute_pants_size(
             hip_width,
             float(leg_length),
@@ -434,6 +446,7 @@ class GarmentOverlay:
             source.shape[1],
             frame_w,
             frame_h,
+            scale=pants_scale,
         )
         target_width = int(self._smooth("p_width", float(target_width)))
         target_height = int(self._smooth("p_height", float(target_height)))

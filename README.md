@@ -136,13 +136,20 @@ python -m uvicorn main:app --app-dir backend --host 0.0.0.0 --port 8000
 
 Or from `backend/`: `uvicorn main:app --host 0.0.0.0 --port 8000`
 
-Confirm [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health) and [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+Confirm [http://127.0.0.1:8000](http://127.0.0.1:8000) for the retail dashboard, [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health), and [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| GET | `/` | Dark retail dashboard (`backend/static/index.html`) |
+| GET | `/video_feed` | MJPEG live camera stream (`multipart/x-mixed-replace`) |
 | GET | `/health` | Status, loaded models, last try-on command |
 | GET | `/api/v1/garments` | Upper + lower PNGs from `assets/sample_clothes/` |
 | POST | `/api/v1/tryon/switch` | Body `{"garment_id": "tshirt1"}` — live mirror switches |
+| POST | `/api/v1/tryon/snapshot` | Queue a 3-2-1 snapshot on the live mirror |
+| POST | `/api/v1/tryon/record` | Toggle video recording on the live mirror |
+| GET/POST | `/api/v1/tryon/studio` | Color tint, gesture toggle, fit sensitivity |
+| GET | `/api/v1/tryon/status` | Live overlay HUD (garment, fit, FPS) |
+| POST | `/api/v1/garments/upload` | Custom garment PNG/JPG and auto try-on |
 | GET | `/api/v1/captures` | Snapshot and video download URLs |
 
 ### 3. Launch the Smart Mirror
@@ -216,9 +223,9 @@ vto-smart-mirror/
 ├── config/settings.py
 ├── core/                        # Vision, overlay, HUD, recording
 └── backend/
-    ├── main.py                  # FastAPI entry (health, garments, tryon, captures)
+    ├── main.py                  # FastAPI entry (dashboard, video_feed, catalog API)
     ├── app/                     # Routers and schemas
-    └── static/garments/         # API-served clothing assets
+    └── static/                  # Retail dashboard + garments/
 ```
 
 ---
