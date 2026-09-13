@@ -5,7 +5,7 @@
 Built as a production-style computer-vision portfolio project: real-time overlay, retail HUD, QR share, H.264 MP4 session recording, and on-screen performance metrics.
 
 ---
-
+  
 ## Project Architecture
 
 The desktop client runs a 1280×720 capture loop. A FastAPI backend serves the garment catalog and static assets. Phones on the same LAN download snapshots from `/captures`.
