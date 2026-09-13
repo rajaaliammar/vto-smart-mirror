@@ -1,4 +1,4 @@
-# VTO Smart Mirror
+# VTO Smart Mirror 
 
 **AI-powered virtual try-on for in-store fashion retail.** A live webcam becomes a smart mirror: MediaPipe body tracking, PNG garment compositing, gesture browsing, and a FastAPI catalog — so shoppers preview shirts (and optional pants) without a fitting room.
 
