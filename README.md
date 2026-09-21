@@ -81,7 +81,7 @@ Shirt width follows shoulder span; length follows shoulder-to-hip torso height (
 ### Lighting HSV
 A chest patch is sampled each frame. Median HSV **value** estimates ambient brightness; the garment BGR is gain/contrast-matched so fabric does not look pasted on under bright or dim store lighting. Color variants (Crimson, Royal, Emerald, Charcoal) recolor in HSV while preserving texture and alpha.
 
-### Gesture Control
+### Gesture Control                 
 MediaPipe Hands tracks the index fingertip (EMA-smoothed cursor on the mirror). A short horizontal swipe left/right cycles the shirt catalog — the same actions as `P` / `N`. Designed for kiosk use without touching a keyboard.
 
 ### AI Fit Advisor
