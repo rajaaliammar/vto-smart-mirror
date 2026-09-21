@@ -77,7 +77,7 @@ flowchart LR
 
 ### Dynamic Fit
 Shirt width follows shoulder span; length follows shoulder-to-hip torso height (with PNG aspect-ratio clamps so the garment does not stretch unnaturally). In **full outfit** mode, jeans scale from hip width and hip-to-ankle length. EMA smoothing keeps the overlay stable when hands enter the frame or pose briefly drops.
-
+                                          
 ### Lighting HSV
 A chest patch is sampled each frame. Median HSV **value** estimates ambient brightness; the garment BGR is gain/contrast-matched so fabric does not look pasted on under bright or dim store lighting. Color variants (Crimson, Royal, Emerald, Charcoal) recolor in HSV while preserving texture and alpha.
 
